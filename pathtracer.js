@@ -3369,7 +3369,7 @@ void main() {
 
 	function buildWindow() {
 		const canvas = el('canvas', { id: 'ptr_canvas' });
-		const overlay = el('div', { id: 'ptr_overlay', text: '准备中…' });
+		const overlay = el('div', { id: 'ptr_overlay', text: '准备中（若长时间无法加载请点击 重载模型 按钮）…' });
 		const viewport = el('div', { id: 'ptr_viewport' }, [canvas, overlay]);
 		const sidebar = buildSidebar();
 		const root = el('div', { id: 'ptr_root' }, [viewport, sidebar]);
