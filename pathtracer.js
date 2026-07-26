@@ -62,6 +62,7 @@
 		ground_radius: 0,
 		ground_catcher: false,
 
+		render_sides: 'auto',
 		def_roughness: 0.85,
 		def_metalness: 0.0,
 		emissive_strength: 1.0,
@@ -414,6 +415,27 @@
 	const MF_WRAP_REPEAT = 16;
 	const MF_ADDITIVE = 32;
 
+	function getMaterialSide(tex, override) {
+		if (override === 'double') return 'double';
+		if (override === 'front') return 'front';
+		try {
+			if (tex && tex.render_sides === 'front') return 'front';
+			if (tex && tex.render_sides === 'double') return 'double';
+			const global = (typeof settings !== 'undefined' && settings.render_sides)
+				? settings.render_sides.value : 'auto';
+			if (global === 'front') return 'front';
+			if (global === 'auto') {
+				if (typeof Format !== 'undefined' && Format && Format.render_sides) {
+					const v = typeof Format.render_sides === 'function' ? Format.render_sides() : Format.render_sides;
+					if (v === 'front') return 'front';
+					if (v === 'back') return 'back';
+					if (v === 'double') return 'double';
+				}
+			}
+		} catch (err) { }
+		return 'double';
+	}
+
 	function textureSource(tex) {
 		if (!tex) return null;
 		if (tex.canvas && tex.canvas.width > 1 && tex.canvas.height > 1) return tex.canvas;
@@ -478,6 +500,7 @@
 		const normals = [];
 		const uvs = [];
 		const texRefs = [];
+		const flips = [];
 
 		if (typeof Canvas !== 'undefined' && Canvas.scene) Canvas.scene.updateMatrixWorld(true);
 
@@ -503,6 +526,7 @@
 			mesh.updateWorldMatrix(true, false);
 			const m = mesh.matrixWorld.elements;
 			const nm = normalMatrix3(m);
+			const mirrored = mat3Determinant(m) < 0 ? 1 : 0;
 
 			const fkeys = faceKeysPerTriangle(element, triCount);
 			let fallbackTexture = defaultTexture;
@@ -562,6 +586,7 @@
 					} catch (err) { }
 				}
 				texRefs.push(tex || null);
+				flips.push(mirrored);
 			}
 		});
 
@@ -570,8 +595,16 @@
 			normals: new Float32Array(normals),
 			uvs: new Float32Array(uvs),
 			texRefs: texRefs,
+			flips: flips,
 			triCount: texRefs.length,
 		};
+	}
+
+	function mat3Determinant(m) {
+		const a = m[0], b = m[1], c = m[2];
+		const d = m[4], e = m[5], f = m[6];
+		const g = m[8], h = m[9], i = m[10];
+		return a * (e * i - f * h) - d * (b * i - c * h) + g * (b * f - c * e);
 	}
 
 	function transformPoint(m, x, y, z) {
@@ -654,6 +687,7 @@
 		slotList.forEach(slot => {
 			const tex = slot.texture;
 			slot.color = null; slot.mer = null; slot.normal = null;
+			slot.side = 'double';
 			if (!tex) { sizes.push([1, 1]); return; }
 
 			let group = null;
@@ -672,6 +706,7 @@
 			slot.normal = textureSource(nrmTex);
 			slot.colorTex = colorTex;
 			slot.group = group;
+			slot.side = getMaterialSide(colorTex || tex, settings.render_sides);
 
 			let w = slot.color ? slot.color.width : 1;
 			let h = slot.color ? slot.color.height : 1;
@@ -1191,12 +1226,16 @@ bool hitAABB(vec3 bmin, vec3 bmax, vec3 ro, vec3 invD, float tmax) {
 
 void triIntersect(int i, vec3 ro, vec3 rd, inout Hit hit) {
 	vec3 v0 = fTri(i * 3 + 0).xyz;
-	vec3 v1 = fTri(i * 3 + 1).xyz;
+	vec4 p1 = fTri(i * 3 + 1);
+	vec3 v1 = p1.xyz;
 	vec3 v2 = fTri(i * 3 + 2).xyz;
 	vec3 e1 = v1 - v0;
 	vec3 e2 = v2 - v0;
 	vec3 pv = cross(rd, e2);
 	float det = dot(e1, pv);
+	int cull = int(p1.w + 0.5);
+	if (cull == 1 && det <= 0.0) return;
+	if (cull == 2 && det >= 0.0) return;
 	if (abs(det) < 1e-12) return;
 	float inv = 1.0 / det;
 	vec3 tv = ro - v0;
@@ -2149,9 +2188,14 @@ void main() {
 				triPos[po + 1] = geo.positions[so + 1];
 				triPos[po + 2] = geo.positions[so + 2];
 				triPos[po + 3] = slot;
+				const side = mats.slotList[slot] ? mats.slotList[slot].side : 'double';
+				let cull = side === 'front' ? 1 : (side === 'back' ? 2 : 0);
+				if (cull !== 0 && geo.flips[t]) cull = 3 - cull;
+
 				triPos[po + 4] = geo.positions[so + 3];
 				triPos[po + 5] = geo.positions[so + 4];
 				triPos[po + 6] = geo.positions[so + 5];
+				triPos[po + 7] = cull;
 				triPos[po + 8] = geo.positions[so + 6];
 				triPos[po + 9] = geo.positions[so + 7];
 				triPos[po + 10] = geo.positions[so + 8];
@@ -2714,7 +2758,7 @@ void main() {
 
 	const CHANGE_KIND = {
 		def_roughness: 'scene', def_metalness: 'scene', emissive_strength: 'scene',
-		alpha_cutoff: 'scene', alpha_mode: 'scene',
+		alpha_cutoff: 'scene', alpha_mode: 'scene', render_sides: 'scene',
 		env_mode: 'env', sun_enable: 'env', sun_elevation: 'env', sun_azimuth: 'env',
 		sun_intensity: 'env', sun_color: 'env', sky_zenith: 'env', sky_horizon: 'env',
 		sky_ground: 'env', sky_haze: 'env', grad_top: 'env', grad_bottom: 'env', solid_color: 'env',
@@ -3228,6 +3272,8 @@ void main() {
 			rowSlider('默认粗糙度', 'def_roughness', 0, 1, 0.01, 2),
 			rowSlider('默认金属度', 'def_metalness', 0, 1, 0.01, 2),
 			rowSlider('自发光强度', 'emissive_strength', 0, 40, 0.1, 2),
+			rowSelect('渲染面', 'render_sides', { auto: '跟随 Blockbench', double: '强制双面', front: '强制单面' }),
+			el('div', { class: 'ptr_note', text: '跟随 Blockbench 时会按格式/纹理做背面剔除（Java 方块模型为单面），负尺寸方块因此只显示内部贴图，与视图一致。' }),
 			rowSelect('Alpha 模式', 'alpha_mode', { cutout: '裁剪（Minecraft）', blend: '混合（半透明）', opaque: '忽略透明' }),
 			rowSlider('默认 Alpha 阈值', 'alpha_cutoff', 0, 1, 0.01, 2),
 			el('div', { class: 'ptr_note', text: '裁剪: alpha 低于阈值的像素完全不可见(树叶/栅栏)。混合: 按 alpha 随机穿透，可渲染染色玻璃等半透明材质。' }),
@@ -3522,7 +3568,7 @@ void main() {
 			'',
 			'需要支持 WebGL2 与 `EXT_color_buffer_float` 的显卡。',
 		].join('\n'),
-		version: '1.0.0',
+		version: '1.1.0',
 		min_version: '4.8.0',
 		variant: 'both',
 		tags: ['Rendering', 'Preview'],
