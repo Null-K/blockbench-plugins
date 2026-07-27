@@ -5,6 +5,8 @@
 > 
 > **更新需要重新下载文件并重新安装插件**
 
+### 如果在使用中遇到问题，可以加入官方群 `1104261361` 进行反馈
+
 ### hsl_shift_brush.js
 - https://www.bilibili.com/video/BV1sq3V6yEsF
     - 1.0.0 初始版本
