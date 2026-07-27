@@ -17,13 +17,15 @@
 		res_mode: 'fit',
 		res_width: 1280,
 		res_height: 720,
-		max_samples: 256,
+		render_mode: 'preview',
+		preview_samples: 8,
+		final_samples: 256,
 		max_bounce: 6,
 		clamp_value: 12,
 		filter_linear: false,
 		denoise: true,
 		denoise_strength: 1.0,
-		interactive_scale: 0.5,
+		interactive_scale: 0.2,
 		auto_follow: false,
 
 		ortho: false,
@@ -3031,7 +3033,8 @@ void main() {
 		sharpen_enable: 'post', sharpen_strength: 'post',
 		grain_enable: 'post', grain_strength: 'post',
 		res_mode: 'resize', res_width: 'resize', res_height: 'resize',
-		max_samples: 'post', auto_follow: 'post', auto_sync: 'post', interactive_scale: 'post',
+		render_mode: 'post', preview_samples: 'post', final_samples: 'post',
+		auto_follow: 'post', auto_sync: 'post', interactive_scale: 'post',
 	};
 
 	const SKY_PRESETS = {
@@ -3251,11 +3254,15 @@ void main() {
 		if (PTR.settings.interactive_scale < 1) applyResolution();
 	}
 
+	function currentMaxSamples() {
+		return PTR.settings.render_mode === 'final' ? PTR.settings.final_samples : PTR.settings.preview_samples;
+	}
+
 	function updateStatus(scene) {
 		const t = PTR.tracer;
 		if (!t || !PTR.nodes.status) return;
 		const s = scene || t.scene;
-		const max = PTR.settings.max_samples;
+		const max = currentMaxSamples();
 		const pct = clamp(t.spp / Math.max(max, 1), 0, 1);
 		PTR.nodes.bar.style.width = (pct * 100).toFixed(1) + '%';
 		let line = t.spp + ' / ' + max + ' spp　' + t.width + '×' + t.height;
@@ -3315,11 +3322,12 @@ void main() {
 			}
 		}
 
-		if (t.spp >= PTR.settings.max_samples) return;
+		const maxSamples = currentMaxSamples();
+		if (t.spp >= maxSamples) return;
 
 		try {
 			t.setCameraOnly(PTR.cam.state());
-			const n = Math.min(PTR.passesPerFrame, PTR.settings.max_samples - t.spp);
+			const n = Math.min(PTR.passesPerFrame, maxSamples - t.spp);
 			for (let i = 0; i < n; i++) t.renderPass(PTR.settings);
 			t.present(PTR.settings);
 			PTR.lastPasses = n;
@@ -3423,7 +3431,10 @@ void main() {
 			rowSelect('分辨率', 'res_mode', { fit: '自适应窗口', custom: '自定义' }),
 			rowNumber('宽度', 'res_width', 32, 8192, 1),
 			rowNumber('高度', 'res_height', 32, 8192, 1),
-			rowNumber('目标采样数', 'max_samples', 1, 100000, 1),
+			rowSelect('当前模式', 'render_mode', { preview: '预览（低采样）', final: '最终渲染' }),
+			rowNumber('预览采样数', 'preview_samples', 1, 100000, 1),
+			rowNumber('最终采样数', 'final_samples', 1, 100000, 1),
+			el('div', { class: 'ptr_note', text: '调试时可以使用预览模式，渲染速度更快。确认效果后切到“最终渲染”获取更清晰的图片。' }),
 			rowSlider('最大反弹', 'max_bounce', 1, 16, 1, 0),
 			rowSlider('亮度截断', 'clamp_value', 0, 100, 0.5, 1),
 			rowSlider('交互降采样', 'interactive_scale', 0.2, 1, 0.05, 2),
@@ -3710,6 +3721,27 @@ void main() {
 			PTR.lastFrame = performance.now();
 			updateStatus();
 		});
+
+		const btnMode = el('button', { class: 'ptr_btn', text: '切换到最终渲染' });
+		btnMode.addEventListener('click', () => {
+			PTR.settings.render_mode = PTR.settings.render_mode === 'final' ? 'preview' : 'final';
+			syncControls();
+			saveSettings();
+			updateModeButton();
+			if (PTR.paused) {
+				PTR.paused = false;
+				btnPause.textContent = '暂停';
+				PTR.lastFrame = performance.now();
+			}
+			updateStatus();
+		});
+		function updateModeButton() {
+			const isFinal = PTR.settings.render_mode === 'final';
+			btnMode.textContent = isFinal ? '切换到预览' : '切换到最终渲染';
+			btnMode.classList.toggle('accent', isFinal);
+		}
+		updateModeButton();
+		PTR.updateModeButton = updateModeButton;
 		const btnRestart = el('button', { class: 'ptr_btn', text: '重新开始' });
 		btnRestart.addEventListener('click', () => { if (PTR.tracer) PTR.tracer.reset(); });
 		const btnReload = el('button', { class: 'ptr_btn', text: '重载模型' });
@@ -3725,7 +3757,7 @@ void main() {
 		});
 
 		const footer = el('div', { id: 'ptr_footer' }, [
-			status, progress, btnPause, btnRestart, btnReload, btnSave, btnClose,
+			status, progress, btnMode, btnPause, btnRestart, btnReload, btnSave, btnClose,
 		]);
 
 		const wrapper = el('div', {
@@ -3848,7 +3880,7 @@ void main() {
 			'',
 			'需要支持 WebGL2 与 `EXT_color_buffer_float` 的显卡。',
 		].join('\n'),
-		version: '1.3.0',
+		version: '1.4.0',
 		min_version: '4.8.0',
 		variant: 'both',
 		tags: ['Rendering', 'Preview'],
