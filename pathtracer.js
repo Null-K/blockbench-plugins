@@ -73,6 +73,17 @@
 		exposure: 1.0,
 		contrast: 1.0,
 		saturation: 1.0,
+
+		bloom_enable: false,
+		bloom_threshold: 1.0,
+		bloom_intensity: 0.5,
+		bloom_radius: 2.0,
+		vignette_enable: false,
+		vignette_strength: 0.4,
+		sharpen_enable: false,
+		sharpen_strength: 0.25,
+		grain_enable: false,
+		grain_strength: 0.03,
 	};
 
 	function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
@@ -2064,7 +2075,7 @@ void main() {
 }
 `;
 
-	const FS_DISPLAY = `#version 300 es
+	const FS_COMPOSITE = `#version 300 es
 precision highp float;
 precision highp sampler2D;
 
@@ -2074,9 +2085,84 @@ uniform sampler2D uAlbedoTex;
 uniform float uInvSpp;
 uniform int   uUseDenoise;
 uniform float uExposure;
+
+out vec4 fragColor;
+
+void main() {
+	ivec2 px = ivec2(gl_FragCoord.xy);
+	vec4 acc = texelFetch(uAccumTex, px, 0);
+	vec3 color;
+	if (uUseDenoise == 1) {
+		vec3 alb = max(texelFetch(uAlbedoTex, px, 0).rgb * uInvSpp, vec3(0.02));
+		color = texelFetch(uDenoisedTex, px, 0).rgb * alb;
+	} else {
+		color = acc.rgb * uInvSpp;
+	}
+	float alpha = clamp(acc.a * uInvSpp, 0.0, 1.0);
+	color = max(color, vec3(0.0)) * uExposure;
+	fragColor = vec4(color, alpha);
+}
+`;
+
+	const FS_BLOOM_BRIGHT = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+
+uniform sampler2D uHDR;
+uniform float uThreshold;
+
+out vec4 fragColor;
+
+void main() {
+	ivec2 px = ivec2(gl_FragCoord.xy);
+	vec3 c = texelFetch(uHDR, px, 0).rgb;
+	fragColor = vec4(max(c - vec3(uThreshold), 0.0), 1.0);
+}
+`;
+
+	const FS_BLOOM_BLUR = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+
+uniform sampler2D uTex;
+uniform vec2 uDir;
+uniform float uRadius;
+
+out vec4 fragColor;
+
+void main() {
+	ivec2 px = ivec2(gl_FragCoord.xy);
+	ivec2 size = textureSize(uTex, 0);
+	float sigma = max(uRadius, 0.5);
+	float step = max(sigma / 4.0, 1.0);
+	vec3 sum = vec3(0.0);
+	float wsum = 0.0;
+	for (int i = -8; i <= 8; i++) {
+		float fi = float(i);
+		float w = exp(-(fi * fi) / (2.0 * sigma * sigma));
+		ivec2 q = px + ivec2(uDir * fi * step);
+		q = clamp(q, ivec2(0), size - 1);
+		sum += texelFetch(uTex, q, 0).rgb * w;
+		wsum += w;
+	}
+	fragColor = vec4(wsum > 1e-6 ? sum / wsum : vec3(0.0), 1.0);
+}
+`;
+
+	const FS_TONEMAP = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+
+uniform sampler2D uHDR;
+uniform sampler2D uBloomTex;
+uniform int   uUseBloom;
+uniform float uBloomIntensity;
 uniform float uContrast;
 uniform float uSaturation;
 uniform int   uToneMap;
+uniform int   uVignetteEnable;
+uniform float uVignetteStrength;
+uniform vec2  uResolution;
 
 out vec4 fragColor;
 
@@ -2123,17 +2209,9 @@ vec3 linearToSRGB(vec3 c) {
 
 void main() {
 	ivec2 px = ivec2(gl_FragCoord.xy);
-	vec4 acc = texelFetch(uAccumTex, px, 0);
-	vec3 color;
-	if (uUseDenoise == 1) {
-		vec3 alb = max(texelFetch(uAlbedoTex, px, 0).rgb * uInvSpp, vec3(0.02));
-		color = texelFetch(uDenoisedTex, px, 0).rgb * alb;
-	} else {
-		color = acc.rgb * uInvSpp;
-	}
-	float alpha = clamp(acc.a * uInvSpp, 0.0, 1.0);
-
-	color = max(color, vec3(0.0)) * uExposure;
+	vec4 hdr = texelFetch(uHDR, px, 0);
+	vec3 color = hdr.rgb;
+	if (uUseBloom == 1) color += texelFetch(uBloomTex, px, 0).rgb * uBloomIntensity;
 
 	if (uToneMap == 1) color = tmReinhard(color);
 	else if (uToneMap == 2) color = tmACES(color);
@@ -2145,7 +2223,55 @@ void main() {
 	color = mix(vec3(l), color, uSaturation);
 	color = clamp((color - 0.5) * uContrast + 0.5, 0.0, 1.0);
 
-	fragColor = vec4(linearToSRGB(color), alpha);
+	if (uVignetteEnable == 1) {
+		vec2 uv = (gl_FragCoord.xy / uResolution) * 2.0 - 1.0;
+		float d = clamp(dot(uv, uv) * 0.5, 0.0, 1.0);
+		color *= clamp(1.0 - uVignetteStrength * d, 0.0, 1.0);
+	}
+
+	fragColor = vec4(linearToSRGB(color), hdr.a);
+}
+`;
+
+	const FS_FINAL = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+
+uniform sampler2D uTex;
+uniform int   uSharpenEnable;
+uniform float uSharpenStrength;
+uniform int   uGrainEnable;
+uniform float uGrainStrength;
+uniform float uGrainSeed;
+
+out vec4 fragColor;
+
+float hash(vec2 p) {
+	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+	ivec2 px = ivec2(gl_FragCoord.xy);
+	vec4 c = texelFetch(uTex, px, 0);
+	vec3 color = c.rgb;
+
+	if (uSharpenEnable == 1) {
+		vec3 n = texelFetch(uTex, px + ivec2(0, 1), 0).rgb
+			+ texelFetch(uTex, px + ivec2(0, -1), 0).rgb
+			+ texelFetch(uTex, px + ivec2(1, 0), 0).rgb
+			+ texelFetch(uTex, px + ivec2(-1, 0), 0).rgb;
+		vec3 lap = color * 4.0 - n;
+		color = clamp(color + uSharpenStrength * lap, 0.0, 1.0);
+	}
+
+	if (uGrainEnable == 1) {
+		float n = hash(gl_FragCoord.xy + uGrainSeed) - 0.5;
+		color = clamp(color + n * uGrainStrength, 0.0, 1.0);
+	}
+
+	fragColor = vec4(color, c.a);
 }
 `;
 
@@ -2185,7 +2311,11 @@ void main() {
 
 			this.progPT = createProgram(gl, VS_FULLSCREEN, FS_PATHTRACE, 'pathtrace');
 			this.progDN = createProgram(gl, VS_FULLSCREEN, FS_DENOISE, 'denoise');
-			this.progDP = createProgram(gl, VS_FULLSCREEN, FS_DISPLAY, 'display');
+			this.progCM = createProgram(gl, VS_FULLSCREEN, FS_COMPOSITE, 'composite');
+			this.progBB = createProgram(gl, VS_FULLSCREEN, FS_BLOOM_BRIGHT, 'bloom_bright');
+			this.progBL = createProgram(gl, VS_FULLSCREEN, FS_BLOOM_BLUR, 'bloom_blur');
+			this.progTM = createProgram(gl, VS_FULLSCREEN, FS_TONEMAP, 'tonemap');
+			this.progFN = createProgram(gl, VS_FULLSCREEN, FS_FINAL, 'final');
 
 			this.vao = gl.createVertexArray();
 
@@ -2365,9 +2495,17 @@ void main() {
 				d1: createRenderTexture(gl, w, h, gl.RGBA16F),
 				v0: createRenderTexture(gl, w, h, gl.R32F),
 				v1: createRenderTexture(gl, w, h, gl.R32F),
+				hdr: createRenderTexture(gl, w, h, gl.RGBA16F),
+				bloomA: createRenderTexture(gl, w, h, gl.RGBA16F),
+				bloomB: createRenderTexture(gl, w, h, gl.RGBA16F),
+				tonemapOut: createRenderTexture(gl, w, h, gl.RGBA16F),
 			};
 			this.buffers.fboD0 = createFBO(gl, [this.buffers.d0, this.buffers.v0]);
 			this.buffers.fboD1 = createFBO(gl, [this.buffers.d1, this.buffers.v1]);
+			this.buffers.fboHDR = createFBO(gl, [this.buffers.hdr]);
+			this.buffers.fboBloomA = createFBO(gl, [this.buffers.bloomA]);
+			this.buffers.fboBloomB = createFBO(gl, [this.buffers.bloomB]);
+			this.buffers.fboTonemap = createFBO(gl, [this.buffers.tonemapOut]);
 			this.ping = 0;
 			this.reset();
 		}
@@ -2384,6 +2522,14 @@ void main() {
 			});
 			gl.deleteTexture(b.d0);
 			gl.deleteTexture(b.d1);
+			gl.deleteTexture(b.hdr);
+			gl.deleteTexture(b.bloomA);
+			gl.deleteTexture(b.bloomB);
+			gl.deleteTexture(b.tonemapOut);
+			gl.deleteFramebuffer(b.fboHDR);
+			gl.deleteFramebuffer(b.fboBloomA);
+			gl.deleteFramebuffer(b.fboBloomB);
+			gl.deleteFramebuffer(b.fboTonemap);
 			gl.deleteTexture(b.v0);
 			gl.deleteTexture(b.v1);
 			gl.deleteFramebuffer(b.fboA);
@@ -2580,21 +2726,80 @@ void main() {
 				}
 			}
 
+			const buf = this.buffers;
+
+			gl.bindFramebuffer(gl.FRAMEBUFFER, buf.fboHDR);
+			gl.viewport(0, 0, this.width, this.height);
+			{
+				const p = this.progCM;
+				gl.useProgram(p.program);
+				this.bindTex(0, cur.color, 'uAccumTex', p);
+				this.bindTex(1, denoised || cur.color, 'uDenoisedTex', p);
+				this.bindTex(2, cur.albedo, 'uAlbedoTex', p);
+				gl.uniform1f(p.uniforms.uInvSpp, invSpp);
+				gl.uniform1i(p.uniforms.uUseDenoise, useDenoise && denoised ? 1 : 0);
+				gl.uniform1f(p.uniforms.uExposure, settings.exposure);
+				gl.drawArrays(gl.TRIANGLES, 0, 3);
+			}
+
+			const useBloom = !!settings.bloom_enable;
+			if (useBloom) {
+				{
+					const p = this.progBB;
+					gl.bindFramebuffer(gl.FRAMEBUFFER, buf.fboBloomA);
+					gl.useProgram(p.program);
+					this.bindTex(0, buf.hdr, 'uHDR', p);
+					gl.uniform1f(p.uniforms.uThreshold, settings.bloom_threshold);
+					gl.drawArrays(gl.TRIANGLES, 0, 3);
+				}
+				const radius = Math.max(settings.bloom_radius, 0.1) * (this.width / 1280);
+				{
+					const p = this.progBL;
+					gl.useProgram(p.program);
+					gl.uniform1f(p.uniforms.uRadius, radius);
+					gl.bindFramebuffer(gl.FRAMEBUFFER, buf.fboBloomB);
+					this.bindTex(0, buf.bloomA, 'uTex', p);
+					gl.uniform2f(p.uniforms.uDir, 1, 0);
+					gl.drawArrays(gl.TRIANGLES, 0, 3);
+					gl.bindFramebuffer(gl.FRAMEBUFFER, buf.fboBloomA);
+					this.bindTex(0, buf.bloomB, 'uTex', p);
+					gl.uniform2f(p.uniforms.uDir, 0, 1);
+					gl.drawArrays(gl.TRIANGLES, 0, 3);
+				}
+			}
+
+			gl.bindFramebuffer(gl.FRAMEBUFFER, buf.fboTonemap);
+			gl.viewport(0, 0, this.width, this.height);
+			{
+				const p = this.progTM;
+				gl.useProgram(p.program);
+				this.bindTex(0, buf.hdr, 'uHDR', p);
+				this.bindTex(1, useBloom ? buf.bloomA : buf.hdr, 'uBloomTex', p);
+				gl.uniform1i(p.uniforms.uUseBloom, useBloom ? 1 : 0);
+				gl.uniform1f(p.uniforms.uBloomIntensity, settings.bloom_intensity);
+				gl.uniform1f(p.uniforms.uContrast, settings.contrast);
+				gl.uniform1f(p.uniforms.uSaturation, settings.saturation);
+				const tmMap = { none: 0, reinhard: 1, aces: 2, filmic: 3, agx: 4 };
+				gl.uniform1i(p.uniforms.uToneMap, tmMap[settings.tone_mapping] != null ? tmMap[settings.tone_mapping] : 2);
+				gl.uniform1i(p.uniforms.uVignetteEnable, settings.vignette_enable ? 1 : 0);
+				gl.uniform1f(p.uniforms.uVignetteStrength, settings.vignette_strength);
+				gl.uniform2f(p.uniforms.uResolution, this.width, this.height);
+				gl.drawArrays(gl.TRIANGLES, 0, 3);
+			}
+
 			gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 			gl.viewport(0, 0, this.width, this.height);
-			const p = this.progDP;
-			gl.useProgram(p.program);
-			this.bindTex(0, cur.color, 'uAccumTex', p);
-			this.bindTex(1, denoised || cur.color, 'uDenoisedTex', p);
-			this.bindTex(2, cur.albedo, 'uAlbedoTex', p);
-			gl.uniform1f(p.uniforms.uInvSpp, invSpp);
-			gl.uniform1i(p.uniforms.uUseDenoise, useDenoise && denoised ? 1 : 0);
-			gl.uniform1f(p.uniforms.uExposure, settings.exposure);
-			gl.uniform1f(p.uniforms.uContrast, settings.contrast);
-			gl.uniform1f(p.uniforms.uSaturation, settings.saturation);
-			const tmMap = { none: 0, reinhard: 1, aces: 2, filmic: 3, agx: 4 };
-			gl.uniform1i(p.uniforms.uToneMap, tmMap[settings.tone_mapping] != null ? tmMap[settings.tone_mapping] : 2);
-			gl.drawArrays(gl.TRIANGLES, 0, 3);
+			{
+				const p = this.progFN;
+				gl.useProgram(p.program);
+				this.bindTex(0, buf.tonemapOut, 'uTex', p);
+				gl.uniform1i(p.uniforms.uSharpenEnable, settings.sharpen_enable ? 1 : 0);
+				gl.uniform1f(p.uniforms.uSharpenStrength, settings.sharpen_strength);
+				gl.uniform1i(p.uniforms.uGrainEnable, settings.grain_enable ? 1 : 0);
+				gl.uniform1f(p.uniforms.uGrainStrength, settings.grain_strength);
+				gl.uniform1f(p.uniforms.uGrainSeed, (this.spp * 37.13) % 1000.0);
+				gl.drawArrays(gl.TRIANGLES, 0, 3);
+			}
 			gl.bindVertexArray(null);
 		}
 
@@ -2611,7 +2816,7 @@ void main() {
 				gl.deleteTexture(this.env.marg);
 				this.env = null;
 			}
-			[this.progPT, this.progDN, this.progDP].forEach(p => { if (p) gl.deleteProgram(p.program); });
+			[this.progPT, this.progDN, this.progCM, this.progBB, this.progBL, this.progTM, this.progFN].forEach(p => { if (p) gl.deleteProgram(p.program); });
 			if (this.dummy2D) gl.deleteTexture(this.dummy2D);
 			if (this.dummyF) gl.deleteTexture(this.dummyF.texture);
 			if (this.dummyR) gl.deleteTexture(this.dummyR);
@@ -2821,6 +3026,10 @@ void main() {
 		sky_ground: 'env', sky_haze: 'env', grad_top: 'env', grad_bottom: 'env', solid_color: 'env',
 		tone_mapping: 'post', exposure: 'post', contrast: 'post', saturation: 'post',
 		denoise: 'post', denoise_strength: 'post',
+		bloom_enable: 'post', bloom_threshold: 'post', bloom_intensity: 'post', bloom_radius: 'post',
+		vignette_enable: 'post', vignette_strength: 'post',
+		sharpen_enable: 'post', sharpen_strength: 'post',
+		grain_enable: 'post', grain_strength: 'post',
 		res_mode: 'resize', res_width: 'resize', res_height: 'resize',
 		max_samples: 'post', auto_follow: 'post', auto_sync: 'post', interactive_scale: 'post',
 	};
@@ -3347,6 +3556,19 @@ void main() {
 			rowSlider('降噪强度', 'denoise_strength', 0, 8, 0.05, 2),
 		]));
 
+		bar.appendChild(section('后处理效果', false, [
+			rowCheck('泛光 Bloom', 'bloom_enable'),
+			rowSlider('泛光阈值', 'bloom_threshold', 0, 10, 0.05, 2),
+			rowSlider('泛光强度', 'bloom_intensity', 0, 5, 0.01, 2),
+			rowSlider('泛光半径', 'bloom_radius', 0.2, 10, 0.1, 1),
+			rowCheck('暗角 Vignette', 'vignette_enable'),
+			rowSlider('暗角强度', 'vignette_strength', 0, 1.5, 0.01, 2),
+			rowCheck('锐化 Sharpen', 'sharpen_enable'),
+			rowSlider('锐化强度', 'sharpen_strength', 0, 2, 0.01, 2),
+			rowCheck('胶片颗粒', 'grain_enable'),
+			rowSlider('颗粒强度', 'grain_strength', 0, 0.3, 0.005, 3),
+		]));
+
 		return bar;
 	}
 
@@ -3603,7 +3825,8 @@ void main() {
 
 	if (typeof window !== 'undefined' && window.__PATHTRACER_TEST__) {
 		window.__PATHTRACER_INTERNALS__ = {
-			VS_FULLSCREEN, FS_PATHTRACE, FS_DENOISE, FS_DISPLAY,
+			VS_FULLSCREEN, FS_PATHTRACE, FS_DENOISE,
+			FS_COMPOSITE, FS_BLOOM_BRIGHT, FS_BLOOM_BLUR, FS_TONEMAP, FS_FINAL,
 			PathTracer, buildBVH, buildMaterials, collectGeometry,
 			generateSkyPixels, buildEnvDistribution, parseHDR, packAtlas,
 			DEFAULTS,
@@ -3625,7 +3848,7 @@ void main() {
 			'',
 			'需要支持 WebGL2 与 `EXT_color_buffer_float` 的显卡。',
 		].join('\n'),
-		version: '1.2.0',
+		version: '1.3.0',
 		min_version: '4.8.0',
 		variant: 'both',
 		tags: ['Rendering', 'Preview'],
