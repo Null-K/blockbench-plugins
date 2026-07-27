@@ -3200,6 +3200,26 @@ void main() {
 		t.reset();
 	}
 
+	function resetToDefaults() {
+		if (!confirm('确定要将所有渲染设置重置为默认值吗？（不影响材质单独覆盖的参数）')) return;
+		clearTimeout(PTR.rebuildTimer);
+		for (const k in DEFAULTS) PTR.settings[k] = DEFAULTS[k];
+		PTR.customEnv = null;
+		PTR.customEnvName = '';
+		if (PTR.nodes.envName) PTR.nodes.envName.textContent = '(未载入)';
+		syncControls();
+		if (PTR.updateModeButton) PTR.updateModeButton();
+		saveSettings();
+		const t = PTR.tracer;
+		if (t) {
+			try {
+				t.setEnvironment(PTR.settings, null);
+				applyResolution();
+				rebuildScene();
+			} catch (err) { showError(err); }
+		}
+	}
+
 	function showError(err) {
 		console.error('[PathTracer]', err);
 		if (PTR.nodes.overlay) PTR.nodes.overlay.textContent = '错误: ' + (err && err.message ? err.message : err);
@@ -3746,6 +3766,8 @@ void main() {
 		btnRestart.addEventListener('click', () => { if (PTR.tracer) PTR.tracer.reset(); });
 		const btnReload = el('button', { class: 'ptr_btn', text: '重载模型' });
 		btnReload.addEventListener('click', () => rebuildScene());
+		const btnDefault = el('button', { class: 'ptr_btn', text: '重置为默认参数' });
+		btnDefault.addEventListener('click', () => resetToDefaults());
 		const btnSave = el('button', { class: 'ptr_btn accent', text: '保存 PNG' });
 		btnSave.addEventListener('click', saveImage);
 		const btnClose = el('button', { class: 'ptr_btn', text: '关闭' });
@@ -3757,7 +3779,7 @@ void main() {
 		});
 
 		const footer = el('div', { id: 'ptr_footer' }, [
-			status, progress, btnMode, btnPause, btnRestart, btnReload, btnSave, btnClose,
+			status, progress, btnMode, btnPause, btnRestart, btnReload, btnDefault, btnSave, btnClose,
 		]);
 
 		const wrapper = el('div', {
@@ -3881,7 +3903,7 @@ void main() {
 			'',
 			'官方更新地址：https://github.com/Null-K/blockbench-plugins'
 		].join('\n'),
-		version: '1.4.0',
+		version: '1.4.1',
 		min_version: '4.8.0',
 		variant: 'both',
 		tags: ['Rendering', 'Preview'],
