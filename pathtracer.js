@@ -208,7 +208,8 @@
 		const tex = gl.createTexture();
 		gl.bindTexture(gl.TEXTURE_2D, tex);
 		const fmt = internalFormat || gl.RGBA32F;
-		gl.texImage2D(gl.TEXTURE_2D, 0, fmt, w, h, 0, gl.RGBA, gl.FLOAT, null);
+		const uploadFormat = fmt === gl.R32F ? gl.RED : gl.RGBA;
+		gl.texImage2D(gl.TEXTURE_2D, 0, fmt, w, h, 0, uploadFormat, gl.FLOAT, null);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -1134,11 +1135,13 @@ uniform vec3 uGroundColor;
 uniform sampler2D uAccum;
 uniform sampler2D uAccumAlb;
 uniform sampler2D uAccumNrm;
+uniform sampler2D uAccumMom;
 uniform int uReset;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outAlbedo;
 layout(location = 2) out vec4 outNormal;
+layout(location = 3) out vec4 outMoment;
 
 uint g_rng;
 uint pcgNext() {
@@ -1752,7 +1755,7 @@ float shadowCatcherAlpha(vec3 p, vec3 n) {
 	return clamp(1.0 - vis / full, 0.0, 1.0);
 }
 
-vec3 tracePath(vec3 ro, vec3 rd, out float alphaOut, out vec3 gAlbedo, out vec3 gNormal) {
+vec3 tracePath(vec3 ro, vec3 rd, out float alphaOut, out vec3 gAlbedo, out vec3 gNormal, out float gDepth) {
 	vec3 radiance = vec3(0.0);
 	vec3 beta = vec3(1.0);
 	float lastPdf = 0.0;
@@ -1760,6 +1763,7 @@ vec3 tracePath(vec3 ro, vec3 rd, out float alphaOut, out vec3 gAlbedo, out vec3 
 	alphaOut = 1.0;
 	gAlbedo = vec3(0.0);
 	gNormal = vec3(0.0);
+	gDepth = 1.0e6;
 	bool gWritten = false;
 	int bounce = 0;
 	vec3 prevPos = ro;
@@ -1801,12 +1805,14 @@ vec3 tracePath(vec3 ro, vec3 rd, out float alphaOut, out vec3 gAlbedo, out vec3 
 			alphaOut = shadowCatcherAlpha(s.pos, s.ng);
 			gAlbedo = vec3(0.0);
 			gNormal = s.ng;
+			gDepth = hit.t;
 			break;
 		}
 
 		if (!gWritten) {
 			gAlbedo = s.albedo;
 			gNormal = s.ns;
+			gDepth = hit.t;
 			gWritten = true;
 		}
 
@@ -1936,21 +1942,26 @@ void main() {
 		}
 	}
 
-	float alpha;
+	float alpha, depth;
 	vec3 alb, nrm;
-	vec3 c = tracePath(ro, rd, alpha, alb, nrm);
+	vec3 c = tracePath(ro, rd, alpha, alb, nrm, depth);
+	vec3 demod = c / max(alb, vec3(0.02));
+	float l = dot(demod, vec3(0.2126, 0.7152, 0.0722));
 
 	vec4 prev = vec4(0.0);
 	vec4 prevA = vec4(0.0);
 	vec4 prevN = vec4(0.0);
+	vec4 prevM = vec4(0.0);
 	if (uReset == 0) {
 		prev = texelFetch(uAccum, px, 0);
 		prevA = texelFetch(uAccumAlb, px, 0);
 		prevN = texelFetch(uAccumNrm, px, 0);
+		prevM = texelFetch(uAccumMom, px, 0);
 	}
 	outColor = prev + vec4(c, alpha);
 	outAlbedo = prevA + vec4(alb, 1.0);
 	outNormal = prevN + vec4(nrm, 1.0);
+	outMoment = prevM + vec4(l, l * l, depth, 1.0);
 }
 `;
 
@@ -1961,13 +1972,17 @@ precision highp sampler2D;
 uniform sampler2D uColorIn;
 uniform sampler2D uAlbedoTex;
 uniform sampler2D uNormalTex;
+uniform sampler2D uMomentTex;
+uniform sampler2D uVarianceIn;
 uniform int   uFirst;
 uniform float uInvSpp;
 uniform int   uStepSize;
-uniform float uPhiColor;
+uniform float uPhiColorBase;
 uniform float uPhiNormal;
+uniform float uPhiDepth;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
+layout(location = 1) out float outVariance;
 
 vec3 loadColor(ivec2 p, ivec2 size) {
 	p = clamp(p, ivec2(0), size - 1);
@@ -1977,6 +1992,22 @@ vec3 loadColor(ivec2 p, ivec2 size) {
 		return c / a;
 	}
 	return texelFetch(uColorIn, p, 0).rgb;
+}
+
+float loadVariance(ivec2 p, ivec2 size) {
+	p = clamp(p, ivec2(0), size - 1);
+	if (uFirst == 1) {
+		vec4 m = texelFetch(uMomentTex, p, 0) * uInvSpp;
+		float perSample = max(m.y - m.x * m.x, 0.0);
+		return perSample * uInvSpp;
+	}
+	return texelFetch(uVarianceIn, p, 0).r;
+}
+
+float loadDepth(ivec2 p, ivec2 size) {
+	p = clamp(p, ivec2(0), size - 1);
+	vec4 m = texelFetch(uMomentTex, p, 0);
+	return m.w > 0.0 ? m.z / m.w : 1.0e6;
 }
 
 float kern(int d) {
@@ -1991,31 +2022,45 @@ void main() {
 	ivec2 px = ivec2(gl_FragCoord.xy);
 
 	vec3 cp = loadColor(px, size);
+	float varP = loadVariance(px, size);
+	float depthP = loadDepth(px, size);
 	vec3 np = texelFetch(uNormalTex, px, 0).xyz;
 	float nl = length(np);
 	np = nl > 1e-6 ? np / nl : vec3(0.0, 1.0, 0.0);
 
+	float phiColor = uPhiColorBase * sqrt(max(varP, 0.0)) + 1e-4;
+
 	vec3 sum = vec3(0.0);
 	float wsum = 0.0;
+	float varSum = 0.0;
+	float varWsum = 0.0;
 	for (int dy = -2; dy <= 2; dy++) {
 		for (int dx = -2; dx <= 2; dx++) {
 			ivec2 q = px + ivec2(dx, dy) * uStepSize;
 			if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y) continue;
 			vec3 cq = loadColor(q, size);
+			float varQ = loadVariance(q, size);
+			float depthQ = loadDepth(q, size);
 			vec3 nq = texelFetch(uNormalTex, q, 0).xyz;
 			float ql = length(nq);
 			nq = ql > 1e-6 ? nq / ql : vec3(0.0, 1.0, 0.0);
 
 			vec3 dc = cp - cq;
-			float wc = exp(-dot(dc, dc) / max(uPhiColor, 1e-5));
+			float wc = exp(-dot(dc, dc) / (phiColor * phiColor));
 			float nd = max(0.0, 1.0 - dot(np, nq));
 			float wn = exp(-nd * nd / max(uPhiNormal, 1e-5));
-			float w = kern(dx) * kern(dy) * wc * wn;
+			float dd = abs(depthP - depthQ);
+			float wd = (depthP > 1.0e5 || depthQ > 1.0e5) ? (dd < 1.0 ? 1.0 : 0.0)
+				: exp(-dd * dd / max(uPhiDepth * depthP * depthP + 1e-6, 1e-6));
+			float w = kern(dx) * kern(dy) * wc * wn * wd;
 			sum += cq * w;
 			wsum += w;
+			varSum += varQ * w * w;
+			varWsum += w;
 		}
 	}
 	fragColor = vec4(wsum > 1e-8 ? sum / wsum : cp, 1.0);
+	outVariance = varWsum > 1e-8 ? varSum / (varWsum * varWsum) : varP;
 }
 `;
 
@@ -2309,17 +2354,20 @@ void main() {
 				color: createRenderTexture(gl, w, h, gl.RGBA32F),
 				albedo: createRenderTexture(gl, w, h, gl.RGBA16F),
 				normal: createRenderTexture(gl, w, h, gl.RGBA16F),
+				moment: createRenderTexture(gl, w, h, gl.RGBA32F),
 			});
 			const a = mk(), b = mk();
 			this.buffers = {
 				a: a, b: b,
-				fboA: createFBO(gl, [a.color, a.albedo, a.normal]),
-				fboB: createFBO(gl, [b.color, b.albedo, b.normal]),
+				fboA: createFBO(gl, [a.color, a.albedo, a.normal, a.moment]),
+				fboB: createFBO(gl, [b.color, b.albedo, b.normal, b.moment]),
 				d0: createRenderTexture(gl, w, h, gl.RGBA16F),
 				d1: createRenderTexture(gl, w, h, gl.RGBA16F),
+				v0: createRenderTexture(gl, w, h, gl.R32F),
+				v1: createRenderTexture(gl, w, h, gl.R32F),
 			};
-			this.buffers.fboD0 = createFBO(gl, [this.buffers.d0]);
-			this.buffers.fboD1 = createFBO(gl, [this.buffers.d1]);
+			this.buffers.fboD0 = createFBO(gl, [this.buffers.d0, this.buffers.v0]);
+			this.buffers.fboD1 = createFBO(gl, [this.buffers.d1, this.buffers.v1]);
 			this.ping = 0;
 			this.reset();
 		}
@@ -2332,9 +2380,12 @@ void main() {
 				gl.deleteTexture(set.color);
 				gl.deleteTexture(set.albedo);
 				gl.deleteTexture(set.normal);
+				gl.deleteTexture(set.moment);
 			});
 			gl.deleteTexture(b.d0);
 			gl.deleteTexture(b.d1);
+			gl.deleteTexture(b.v0);
+			gl.deleteTexture(b.v1);
 			gl.deleteFramebuffer(b.fboA);
 			gl.deleteFramebuffer(b.fboB);
 			gl.deleteFramebuffer(b.fboD0);
@@ -2401,6 +2452,7 @@ void main() {
 			this.bindTex(11, src.color, 'uAccum', p);
 			this.bindTex(12, src.albedo, 'uAccumAlb', p);
 			this.bindTex(13, src.normal, 'uAccumNrm', p);
+			this.bindTex(14, src.moment, 'uAccumMom', p);
 
 			gl.uniform2f(u.uResolution, this.width, this.height);
 			gl.uniform1i(u.uSeed, (this.spp * 9781 + 1) | 0);
@@ -2498,26 +2550,31 @@ void main() {
 			if (useDenoise) {
 				const p = this.progDN;
 				gl.useProgram(p.program);
-				const phiBase = 0.12 * settings.denoise_strength;
-				const fade = 64 / (this.spp + 8);
-				const steps = [1, 2, 4];
+				const phiColorBase = 3.2 * settings.denoise_strength;
+				const steps = [1, 2, 4, 8];
 				let inputTex = cur.color;
+				let varTex = null;
 				let first = 1;
 				for (let i = 0; i < steps.length; i++) {
 					const targetFBO = (i % 2 === 0) ? this.buffers.fboD0 : this.buffers.fboD1;
 					const targetTex = (i % 2 === 0) ? this.buffers.d0 : this.buffers.d1;
+					const targetVar = (i % 2 === 0) ? this.buffers.v0 : this.buffers.v1;
 					gl.bindFramebuffer(gl.FRAMEBUFFER, targetFBO);
 					gl.viewport(0, 0, this.width, this.height);
 					this.bindTex(0, inputTex, 'uColorIn', p);
 					this.bindTex(1, cur.albedo, 'uAlbedoTex', p);
 					this.bindTex(2, cur.normal, 'uNormalTex', p);
+					this.bindTex(3, cur.moment, 'uMomentTex', p);
+					this.bindTex(4, varTex || cur.moment, 'uVarianceIn', p);
 					gl.uniform1i(p.uniforms.uFirst, first);
 					gl.uniform1f(p.uniforms.uInvSpp, invSpp);
 					gl.uniform1i(p.uniforms.uStepSize, steps[i]);
-					gl.uniform1f(p.uniforms.uPhiColor, Math.max(phiBase * fade, 1e-4));
+					gl.uniform1f(p.uniforms.uPhiColorBase, phiColorBase);
 					gl.uniform1f(p.uniforms.uPhiNormal, 0.08);
+					gl.uniform1f(p.uniforms.uPhiDepth, 0.01);
 					gl.drawArrays(gl.TRIANGLES, 0, 3);
 					inputTex = targetTex;
+					varTex = targetVar;
 					denoised = targetTex;
 					first = 0;
 				}
@@ -3287,7 +3344,7 @@ void main() {
 			rowSlider('对比度', 'contrast', 0.2, 3, 0.01, 2),
 			rowSlider('饱和度', 'saturation', 0, 3, 0.01, 2),
 			rowCheck('降噪', 'denoise'),
-			rowSlider('降噪强度', 'denoise_strength', 0, 3, 0.05, 2),
+			rowSlider('降噪强度', 'denoise_strength', 0, 8, 0.05, 2),
 		]));
 
 		return bar;
@@ -3568,7 +3625,7 @@ void main() {
 			'',
 			'需要支持 WebGL2 与 `EXT_color_buffer_float` 的显卡。',
 		].join('\n'),
-		version: '1.1.0',
+		version: '1.2.0',
 		min_version: '4.8.0',
 		variant: 'both',
 		tags: ['Rendering', 'Preview'],
