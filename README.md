@@ -1,9 +1,9 @@
 # blockbench-plugins
 
-你可以按照需求自行选择版本  
-当前安装插件版本号可以在 `Blockbench` 插件窗口内查看
-
+> 当前安装插件版本号可以在 `Blockbench` 插件窗口内查看  
 > 新版本包含旧版本的所有功能
+> 
+> **更新需要重新下载文件并重新安装插件**
 
 ### hsl_shift_brush.js
 - https://www.bilibili.com/video/BV1sq3V6yEsF
