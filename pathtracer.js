@@ -21,6 +21,7 @@
 		preview_samples: 8,
 		final_samples: 256,
 		max_bounce: 6,
+		light_samples: 1,
 		clamp_value: 12,
 		filter_linear: false,
 		denoise: true,
@@ -1109,6 +1110,7 @@ precision highp sampler2D;
 uniform vec2 uResolution;
 uniform int  uSeed;
 uniform int  uMaxBounce;
+uniform int  uLightSamples;
 uniform float uClamp;
 uniform int  uFilterLinear;
 
@@ -1864,7 +1866,9 @@ vec3 tracePath(vec3 ro, vec3 rd, out float alphaOut, out vec3 gAlbedo, out vec3 
 
 		vec3 shadeOrigin = s.pos + s.ng * RAY_EPS;
 
-		{
+		int nLS = max(uLightSamples, 1);
+		float invLS = 1.0 / float(nLS);
+		for (int ls_i = 0; ls_i < nLS; ls_i++) {
 			vec3 L;
 			float pdfL;
 			vec3 Le = envSampleDir(L, pdfL);
@@ -1872,30 +1876,34 @@ vec3 tracePath(vec3 ro, vec3 rd, out float alphaOut, out vec3 gAlbedo, out vec3 
 				float pdfB;
 				vec3 f = bsdfEval(s.ns, V, L, s.albedo, s.rough, s.metal, pdfB);
 				if (dot(f, f) > 0.0 && !occluded(shadeOrigin, L, TFAR, false)) {
-					radiance += beta * f * Le * powerHeuristic(pdfL, pdfB) / pdfL;
+					radiance += beta * f * Le * powerHeuristic(pdfL, pdfB) / pdfL * invLS;
 				}
 			}
 		}
 
 		if (uSunEnable == 1) {
-			float pdfL;
-			vec3 L = sunSampleDir(pdfL);
-			if (pdfL > 0.0 && dot(L, s.ns) > 0.0 && dot(L, s.ng) > 0.0) {
-				float pdfB;
-				vec3 f = bsdfEval(s.ns, V, L, s.albedo, s.rough, s.metal, pdfB);
-				if (dot(f, f) > 0.0 && !occluded(shadeOrigin, L, TFAR, false)) {
-					radiance += beta * f * uSunRadiance * powerHeuristic(pdfL, pdfB) / pdfL;
+			for (int ls_i = 0; ls_i < nLS; ls_i++) {
+				float pdfL;
+				vec3 L = sunSampleDir(pdfL);
+				if (pdfL > 0.0 && dot(L, s.ns) > 0.0 && dot(L, s.ng) > 0.0) {
+					float pdfB;
+					vec3 f = bsdfEval(s.ns, V, L, s.albedo, s.rough, s.metal, pdfB);
+					if (dot(f, f) > 0.0 && !occluded(shadeOrigin, L, TFAR, false)) {
+						radiance += beta * f * uSunRadiance * powerHeuristic(pdfL, pdfB) / pdfL * invLS;
+					}
 				}
 			}
 		}
 
 		if (uLightCount > 0) {
-			LightSample ls = sampleTriLight(s.pos);
-			if (ls.pdf > 1e-8 && dot(ls.dir, s.ns) > 0.0 && dot(ls.dir, s.ng) > 0.0 && dot(ls.radiance, ls.radiance) > 0.0) {
-				float pdfB;
-				vec3 f = bsdfEval(s.ns, V, ls.dir, s.albedo, s.rough, s.metal, pdfB);
-				if (dot(f, f) > 0.0 && !occluded(shadeOrigin, ls.dir, ls.dist - RAY_EPS * 2.0, false)) {
-					radiance += beta * f * ls.radiance * powerHeuristic(ls.pdf, pdfB) / ls.pdf;
+			for (int ls_i = 0; ls_i < nLS; ls_i++) {
+				LightSample ls = sampleTriLight(s.pos);
+				if (ls.pdf > 1e-8 && dot(ls.dir, s.ns) > 0.0 && dot(ls.dir, s.ng) > 0.0 && dot(ls.radiance, ls.radiance) > 0.0) {
+					float pdfB;
+					vec3 f = bsdfEval(s.ns, V, ls.dir, s.albedo, s.rough, s.metal, pdfB);
+					if (dot(f, f) > 0.0 && !occluded(shadeOrigin, ls.dir, ls.dist - RAY_EPS * 2.0, false)) {
+						radiance += beta * f * ls.radiance * powerHeuristic(ls.pdf, pdfB) / ls.pdf * invLS;
+					}
 				}
 			}
 		}
@@ -2605,6 +2613,7 @@ void main() {
 			gl.uniform2f(u.uResolution, this.width, this.height);
 			gl.uniform1i(u.uSeed, (this.spp * 9781 + 1) | 0);
 			gl.uniform1i(u.uMaxBounce, settings.max_bounce | 0);
+			gl.uniform1i(u.uLightSamples, settings.light_samples | 0);
 			gl.uniform1f(u.uClamp, settings.clamp_value);
 			gl.uniform1i(u.uFilterLinear, settings.filter_linear ? 1 : 0);
 			gl.uniform1i(u.uReset, this.spp === 0 ? 1 : 0);
@@ -2856,7 +2865,7 @@ void main() {
 	min-width: 240px;
 }
 #ptr_viewport canvas {
-	max-width: 100%; max-height: 100%; width: auto; height: auto;
+	width: 100%; height: 100%; object-fit: contain;
 	image-rendering: auto; cursor: grab;
 	background-image: linear-gradient(45deg, #2a2a30 25%, transparent 25%),
 		linear-gradient(-45deg, #2a2a30 25%, transparent 25%),
@@ -3259,13 +3268,6 @@ void main() {
 			PTR.lastPasses = 0;
 		}
 		t.resize(nw, nh);
-		if (PTR.settings.res_mode === 'custom') {
-			PTR.nodes.canvas.style.width = '';
-			PTR.nodes.canvas.style.height = '';
-		} else {
-			PTR.nodes.canvas.style.width = '100%';
-			PTR.nodes.canvas.style.height = '100%';
-		}
 	}
 
 	function setInteracting(on) {
@@ -3456,6 +3458,8 @@ void main() {
 			rowNumber('最终采样数', 'final_samples', 1, 100000, 1),
 			el('div', { class: 'ptr_note', text: '调试时可以使用预览模式，渲染速度更快。确认效果后切到“最终渲染”获取更清晰的图片。' }),
 			rowSlider('最大反弹', 'max_bounce', 1, 16, 1, 0),
+			rowSlider('光源采样数', 'light_samples', 1, 16, 1, 0),
+			el('div', { class: 'ptr_note', text: '每次反弹对灯光/太阳/环境光多次采样取平均，可显著降低噪点，但会增加相应倍数的渲染开销。' }),
 			rowSlider('亮度截断', 'clamp_value', 0, 100, 0.5, 1),
 			rowSlider('交互降采样', 'interactive_scale', 0.2, 1, 0.05, 2),
 			rowCheck('线性过滤纹理', 'filter_linear'),
@@ -3903,7 +3907,7 @@ void main() {
 			'',
 			'官方更新地址：https://github.com/Null-K/blockbench-plugins'
 		].join('\n'),
-		version: '1.4.1',
+		version: '1.4.2',
 		min_version: '4.8.0',
 		variant: 'both',
 		tags: ['Rendering', 'Preview'],
