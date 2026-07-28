@@ -14,7 +14,7 @@
 https://www.bilibili.com/video/BV1sq3V6yEsF
 
 - 更新日志
-    - 1.0.0 初始版本
+    - **1.0.0** 初始版本
 
 ### pathtracer.js
 https://www.bilibili.com/video/BV1EZ3762EV9
