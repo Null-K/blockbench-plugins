@@ -13,6 +13,10 @@
 	const ENV_W = 1024, ENV_H = 512;
 	const ENV_DIST_W = 256, ENV_DIST_H = 128;
 
+	const INTERACTIVE_MAX_BOUNCE = 2;
+	const INTERACTIVE_PASS_CAP = 8;
+	const IDLE_PASS_CAP = 64;
+
 	const DEFAULTS = {
 		res_mode: 'fit',
 		res_width: 1280,
@@ -1665,7 +1669,7 @@ bool anyHitBVH(vec3 ro, vec3 rd, float maxT) {
 				triIntersect(start + i, ro, rd, h);
 				if (h.tri >= 0) {
 					Mat hm = matOfTri(h.tri);
-					if (!alphaPassThrough(hm, alphaOfTri(h.tri, h.bc, hm))) return true;
+					if (hm.amode == 0 || !alphaPassThrough(hm, alphaOfTri(h.tri, h.bc, hm))) return true;
 				}
 			}
 		} else if (sp <= 30) {
@@ -2578,16 +2582,12 @@ void main() {
 			if (loc) gl.uniform1i(loc, unit);
 		}
 
-		renderPass(settings) {
+		beginFrame(settings) {
 			const gl = this.gl;
-			if (!this.buffers || !this.scene || !this.env) return;
+			if (!this.buffers || !this.scene || !this.env) return false;
 
-			const src = this.ping === 0 ? this.buffers.b : this.buffers.a;
-			const dstFBO = this.ping === 0 ? this.buffers.fboA : this.buffers.fboB;
-
-			gl.bindFramebuffer(gl.FRAMEBUFFER, dstFBO);
-			gl.viewport(0, 0, this.width, this.height);
 			gl.bindVertexArray(this.vao);
+			gl.viewport(0, 0, this.width, this.height);
 
 			const p = this.progPT;
 			const u = p.uniforms;
@@ -2605,18 +2605,12 @@ void main() {
 			this.bindTex(8, this.env.tex, 'uEnv', p);
 			this.bindTex(9, this.env.cond, 'uEnvCond', p);
 			this.bindTex(10, this.env.marg, 'uEnvMarg', p);
-			this.bindTex(11, src.color, 'uAccum', p);
-			this.bindTex(12, src.albedo, 'uAccumAlb', p);
-			this.bindTex(13, src.normal, 'uAccumNrm', p);
-			this.bindTex(14, src.moment, 'uAccumMom', p);
 
 			gl.uniform2f(u.uResolution, this.width, this.height);
-			gl.uniform1i(u.uSeed, (this.spp * 9781 + 1) | 0);
 			gl.uniform1i(u.uMaxBounce, settings.max_bounce | 0);
 			gl.uniform1i(u.uLightSamples, settings.light_samples | 0);
 			gl.uniform1f(u.uClamp, settings.clamp_value);
 			gl.uniform1i(u.uFilterLinear, settings.filter_linear ? 1 : 0);
-			gl.uniform1i(u.uReset, this.spp === 0 ? 1 : 0);
 
 			gl.uniform1i(u.uTriPosW, s.texTriPos ? s.texTriPos.width : 1);
 			gl.uniform1i(u.uTriAttrW, s.texTriAttr ? s.texTriAttr.width : 1);
@@ -2683,6 +2677,28 @@ void main() {
 			gl.uniform1f(u.uGroundRadius, settings.ground_radius);
 			const gc = hexToLinear(settings.ground_color);
 			gl.uniform3f(u.uGroundColor, gc[0], gc[1], gc[2]);
+
+			return true;
+		}
+
+		renderPass() {
+			const gl = this.gl;
+			if (!this.buffers || !this.scene || !this.env) return;
+
+			const src = this.ping === 0 ? this.buffers.b : this.buffers.a;
+			const dstFBO = this.ping === 0 ? this.buffers.fboA : this.buffers.fboB;
+
+			gl.bindFramebuffer(gl.FRAMEBUFFER, dstFBO);
+
+			const p = this.progPT;
+			const u = p.uniforms;
+			this.bindTex(11, src.color, 'uAccum', p);
+			this.bindTex(12, src.albedo, 'uAccumAlb', p);
+			this.bindTex(13, src.normal, 'uAccumNrm', p);
+			this.bindTex(14, src.moment, 'uAccumMom', p);
+
+			gl.uniform1i(u.uSeed, (this.spp * 9781 + 1) | 0);
+			gl.uniform1i(u.uReset, this.spp === 0 ? 1 : 0);
 
 			gl.drawArrays(gl.TRIANGLES, 0, 3);
 
@@ -3273,7 +3289,20 @@ void main() {
 	function setInteracting(on) {
 		if (PTR.interacting === on) return;
 		PTR.interacting = on;
+		if (on) {
+			PTR.passesPerFrame = 1;
+		} else {
+			if (PTR.tracer) PTR.tracer.reset();
+		}
 		if (PTR.settings.interactive_scale < 1) applyResolution();
+	}
+
+	function interactiveSettings(settings) {
+		if (settings.max_bounce <= INTERACTIVE_MAX_BOUNCE && settings.light_samples <= 1) return settings;
+		const fast = Object.assign({}, settings);
+		fast.max_bounce = Math.min(settings.max_bounce, INTERACTIVE_MAX_BOUNCE);
+		fast.light_samples = 1;
+		return fast;
 	}
 
 	function currentMaxSamples() {
@@ -3319,8 +3348,10 @@ void main() {
 		const dt = now - PTR.lastFrame;
 		PTR.lastFrame = now;
 		const targetMs = PTR.interacting ? 24 : 42;
-		if (dt < targetMs * 0.75) PTR.passesPerFrame = Math.min(64, PTR.passesPerFrame + 1);
-		else if (dt > targetMs * 1.35) PTR.passesPerFrame = Math.max(1, PTR.passesPerFrame - 1);
+		const passCap = PTR.interacting ? INTERACTIVE_PASS_CAP : IDLE_PASS_CAP;
+		if (dt < targetMs * 0.75) PTR.passesPerFrame = Math.min(passCap, PTR.passesPerFrame + 1);
+		else if (dt > targetMs * 1.35) PTR.passesPerFrame = Math.max(1, Math.ceil(PTR.passesPerFrame / 2));
+		if (PTR.passesPerFrame > passCap) PTR.passesPerFrame = passCap;
 
 		if (PTR.lastPasses > 0 && dt > 0.5) {
 			const inst = PTR.lastPasses * 1000 / dt;
@@ -3349,10 +3380,15 @@ void main() {
 
 		try {
 			t.setCameraOnly(PTR.cam.state());
+			const passSettings = PTR.interacting ? interactiveSettings(PTR.settings) : PTR.settings;
 			const n = Math.min(PTR.passesPerFrame, maxSamples - t.spp);
-			for (let i = 0; i < n; i++) t.renderPass(PTR.settings);
-			t.present(PTR.settings);
-			PTR.lastPasses = n;
+			if (n > 0 && t.beginFrame(passSettings)) {
+				for (let i = 0; i < n; i++) t.renderPass();
+				PTR.lastPasses = n;
+			} else {
+				PTR.lastPasses = 0;
+			}
+			t.present(PTR.interacting ? Object.assign({}, PTR.settings, { denoise: false, bloom_enable: false }) : PTR.settings);
 		} catch (err) {
 			showError(err);
 			PTR.paused = true;
@@ -3804,6 +3840,8 @@ void main() {
 		tracer.init();
 		PTR.tracer = tracer;
 
+		PTR.open = true;
+
 		applyResolution();
 		tracer.setEnvironment(PTR.settings, PTR.customEnv);
 		rebuildScene();
@@ -3860,6 +3898,11 @@ void main() {
 			buttons: [],
 			lines: [content],
 			onCancel() { closeRenderer(); },
+			onResize() {
+				clearTimeout(PTR.interactTimer);
+				setInteracting(true);
+				PTR.interactTimer = setTimeout(() => setInteracting(false), 250);
+			},
 		});
 		PTR.dialog.show();
 
@@ -3907,7 +3950,7 @@ void main() {
 			'',
 			'官方更新地址：https://github.com/Null-K/blockbench-plugins'
 		].join('\n'),
-		version: '1.4.2',
+		version: '1.4.3',
 		min_version: '4.8.0',
 		variant: 'both',
 		tags: ['Rendering', 'Preview'],
