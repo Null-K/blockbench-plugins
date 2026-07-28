@@ -5,7 +5,7 @@
 
 	const TRI_POS_TEXELS = 3;
 	const TRI_ATTR_TEXELS = 4;
-	const MAT_TEXELS = 4;
+	const MAT_TEXELS = 5;
 	const BVH_TEXELS = 2;
 	const DATA_TEX_WIDTH = 1024;
 	const MAX_LEAF_TRIS = 8;
@@ -91,6 +91,12 @@
 		sharpen_strength: 0.25,
 		grain_enable: false,
 		grain_strength: 0.03,
+
+		watermark_enable: false,
+		watermark_text: '',
+		watermark_size: 24,
+		watermark_opacity: 0.85,
+		watermark_color: '#ffffff',
 	};
 
 	function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
@@ -433,6 +439,9 @@
 	const MF_FULLBRIGHT = 8;
 	const MF_WRAP_REPEAT = 16;
 	const MF_ADDITIVE = 32;
+	const MF_HAS_EMISSIVE_MAP = 64;
+	const MF_EMIS_MAIN_COLOR = 128;
+	const MF_EMIS_CUSTOM_COLOR = 256;
 
 	function getMaterialSide(tex, override) {
 		if (override === 'double') return 'double';
@@ -727,10 +736,21 @@
 			slot.group = group;
 			slot.side = getMaterialSide(colorTex || tex, settings.render_sides);
 
+			const slotOv = (overrides && overrides[tex.uuid]) || {};
+			let emisTex = null;
+			if (slotOv.emissive_map) {
+				const allTex = (typeof Texture !== 'undefined' ? Texture.all : []) || [];
+				emisTex = allTex.find(t => t.uuid === slotOv.emissive_map) || null;
+			}
+			slot.emissiveMap = textureSource(emisTex);
+			slot.emissiveColorMain = slotOv.emissive_color_source === 'main';
+			slot.emissiveColorCustom = slotOv.emissive_color_source === 'custom';
+
 			let w = slot.color ? slot.color.width : 1;
 			let h = slot.color ? slot.color.height : 1;
 			if (slot.mer) { w = Math.max(w, slot.mer.width); h = Math.max(h, slot.mer.height); }
 			if (slot.normal) { w = Math.max(w, slot.normal.width); h = Math.max(h, slot.normal.height); }
+			if (slot.emissiveMap) { w = Math.max(w, slot.emissiveMap.width); h = Math.max(h, slot.emissiveMap.height); }
 			w = clamp(w | 0, 1, maxTexSize);
 			h = clamp(h | 0, 1, maxTexSize);
 			sizes.push([w, h]);
@@ -747,11 +767,13 @@
 			ctx.imageSmoothingEnabled = false;
 			return { canvas: c, ctx: ctx, used: false };
 		};
-		const atlasC = mk(), atlasM = mk(), atlasN = mk();
+		const atlasC = mk(), atlasM = mk(), atlasN = mk(), atlasE = mk();
 		atlasN.ctx.fillStyle = '#8080ff';
 		atlasN.ctx.fillRect(0, 0, S, S);
 		atlasM.ctx.fillStyle = '#000000';
 		atlasM.ctx.fillRect(0, 0, S, S);
+		atlasE.ctx.fillStyle = '#000000';
+		atlasE.ctx.fillRect(0, 0, S, S);
 		atlasC.ctx.clearRect(0, 0, S, S);
 
 		slotList.forEach((slot, i) => {
@@ -765,6 +787,7 @@
 				}
 				if (slot.mer) { atlasM.ctx.drawImage(slot.mer, r.x, r.y, r.w, r.h); atlasM.used = true; }
 				if (slot.normal) { atlasN.ctx.drawImage(slot.normal, r.x, r.y, r.w, r.h); atlasN.used = true; }
+				if (slot.emissiveMap) { atlasE.ctx.drawImage(slot.emissiveMap, r.x, r.y, r.w, r.h); atlasE.used = true; }
 			} catch (err) {
 				console.warn('[PathTracer] 绘制图集失败', err);
 			}
@@ -786,9 +809,27 @@
 			});
 		}
 
+		const emissiveMapSlots = new Set();
+		if (atlasE.used) {
+			const emsData = atlasE.ctx.getImageData(0, 0, S, S).data;
+			slotList.forEach((slot, i) => {
+				if (!slot.emissiveMap) return;
+				const r = slot.rect;
+				let found = false;
+				for (let y = r.y; y < r.y + r.h && !found; y++) {
+					for (let x = r.x; x < r.x + r.w; x++) {
+						const o4 = (y * S + x) * 4;
+						if (emsData[o4] > 4 || emsData[o4 + 1] > 4 || emsData[o4 + 2] > 4) { found = true; break; }
+					}
+				}
+				if (found) emissiveMapSlots.add(i);
+			});
+		}
+
 		const texColor = createAtlasTexture(gl, atlasC.ctx.getImageData(0, 0, S, S).data, S, S);
 		const texMER = atlasM.used ? createAtlasTexture(gl, atlasM.ctx.getImageData(0, 0, S, S).data, S, S) : null;
 		const texNRM = atlasN.used ? createAtlasTexture(gl, atlasN.ctx.getImageData(0, 0, S, S).data, S, S) : null;
+		const texEMS = atlasE.used ? createAtlasTexture(gl, atlasE.ctx.getImageData(0, 0, S, S).data, S, S) : null;
 
 		const matData = new Float32Array(slotList.length * MAT_TEXELS * 4);
 		slotList.forEach((slot, i) => {
@@ -797,6 +838,7 @@
 			const ov = (tex && overrides && overrides[tex.uuid]) || {};
 
 			const hasMER = !!slot.mer;
+			const hasEmissiveMap = !!slot.emissiveMap;
 			const fullbrightTex = !!(tex && (tex.render_mode === 'emissive' || tex.render_mode === 'additive'));
 			const defEmis = (hasMER || fullbrightTex) ? 1 : 0;
 			const emisVal = (ov.emissive != null ? ov.emissive : defEmis) * settings.emissive_strength;
@@ -805,7 +847,10 @@
 			if (slot.color) flags |= MF_HAS_COLOR;
 			if (hasMER) flags |= MF_HAS_MER;
 			if (slot.normal) flags |= MF_HAS_NORMAL;
-			if (!hasMER && emisVal > 0) flags |= MF_FULLBRIGHT;
+			if (!hasMER && hasEmissiveMap) flags |= MF_HAS_EMISSIVE_MAP;
+			if (!hasMER && hasEmissiveMap && slot.emissiveColorMain) flags |= MF_EMIS_MAIN_COLOR;
+			if (!hasMER && hasEmissiveMap && slot.emissiveColorCustom) flags |= MF_EMIS_CUSTOM_COLOR;
+			if (!hasMER && !hasEmissiveMap && emisVal > 0) flags |= MF_FULLBRIGHT;
 			if (tex && tex.render_mode === 'additive') flags |= MF_ADDITIVE;
 			if (!tex || tex.wrap_mode !== 'clamp') flags |= MF_WRAP_REPEAT;
 
@@ -831,7 +876,16 @@
 			const amode = ov.alpha_mode || settings.alpha_mode || 'cutout';
 			matData[o + 15] = amode === 'blend' ? 2 : (amode === 'opaque' ? 0 : 1);
 
-			slot.emissive = emisVal > 0 && (hasMER ? emissiveSlots.has(i) : true);
+			const emisColor = ov.emissive_color ? hexToLinear(ov.emissive_color) : [1, 1, 1];
+			matData[o + 16] = emisColor[0];
+			matData[o + 17] = emisColor[1];
+			matData[o + 18] = emisColor[2];
+			matData[o + 19] = 0;
+
+			if (emisVal <= 0) slot.emissive = false;
+			else if (hasMER) slot.emissive = emissiveSlots.has(i);
+			else if (hasEmissiveMap) slot.emissive = emissiveMapSlots.has(i);
+			else slot.emissive = true;
 		});
 
 		return {
@@ -842,6 +896,7 @@
 			atlasColor: texColor,
 			atlasMER: texMER,
 			atlasNormal: texNRM,
+			atlasEmissive: texEMS,
 			atlasSize: S,
 		};
 	}
@@ -1110,6 +1165,9 @@ precision highp sampler2D;
 #define MF_FULLBRIGHT  8
 #define MF_WRAP_REPEAT 16
 #define MF_ADDITIVE    32
+#define MF_HAS_EMISSIVE_MAP 64
+#define MF_EMIS_MAIN_COLOR  128
+#define MF_EMIS_CUSTOM_COLOR 256
 
 uniform vec2 uResolution;
 uniform int  uSeed;
@@ -1130,6 +1188,7 @@ uniform sampler2D uMat;
 uniform sampler2D uAtlasC;
 uniform sampler2D uAtlasM;
 uniform sampler2D uAtlasN;
+uniform sampler2D uAtlasE;
 uniform sampler2D uLightTex;
 uniform int uTriPosW, uTriAttrW, uBVHW, uMatW, uLightW;
 uniform int uTriCount, uLightCount;
@@ -1186,13 +1245,15 @@ struct Mat {
 	float rough, metal, emis, ior;
 	float transm, cutoff, nscale;
 	int amode;
+	vec3 emisColor;
 };
 
 Mat loadMat(int id) {
-	vec4 m0 = fMat(id * 4 + 0);
-	vec4 m1 = fMat(id * 4 + 1);
-	vec4 m2 = fMat(id * 4 + 2);
-	vec4 m3 = fMat(id * 4 + 3);
+	vec4 m0 = fMat(id * 5 + 0);
+	vec4 m1 = fMat(id * 5 + 1);
+	vec4 m2 = fMat(id * 5 + 2);
+	vec4 m3 = fMat(id * 5 + 3);
+	vec4 m4 = fMat(id * 5 + 4);
 	Mat m;
 	m.tint = m0.rgb;
 	m.flags = int(m0.a + 0.5);
@@ -1200,6 +1261,7 @@ Mat loadMat(int id) {
 	m.rough = m2.x; m.metal = m2.y; m.emis = m2.z; m.ior = m2.w;
 	m.transm = m3.x; m.cutoff = m3.y; m.nscale = m3.z;
 	m.amode = int(m3.w + 0.5);
+	m.emisColor = m4.rgb;
 	return m;
 }
 
@@ -1374,6 +1436,13 @@ vec3 triEmission(int i, vec2 bc) {
 		float e = sampleAtlas(uAtlasM, m.rect, uv, rep).g;
 		return base * e * m.emis;
 	}
+	if ((m.flags & MF_HAS_EMISSIVE_MAP) != 0) {
+		vec3 emsCol = srgbToLin(sampleAtlas(uAtlasE, m.rect, uv, rep).rgb);
+		float mask = dot(emsCol, vec3(0.2126, 0.7152, 0.0722));
+		if ((m.flags & MF_EMIS_CUSTOM_COLOR) != 0) return m.emisColor * mask * m.emis;
+		if ((m.flags & MF_EMIS_MAIN_COLOR) != 0) return base * mask * m.emis;
+		return emsCol * m.emis;
+	}
 	if ((m.flags & MF_FULLBRIGHT) != 0) return base * m.emis;
 	return vec3(0.0);
 }
@@ -1457,6 +1526,16 @@ Surface getSurface(Hit hit, vec3 ro, vec3 rd) {
 		s.metal = clamp(mer.r, 0.0, 1.0);
 		s.rough = clamp(mer.b, 0.015, 1.0);
 		s.emission = base * mer.g * m.emis;
+	} else if ((m.flags & MF_HAS_EMISSIVE_MAP) != 0) {
+		vec3 emsCol = srgbToLin(sampleAtlas(uAtlasE, m.rect, s.uv, rep).rgb);
+		float mask = dot(emsCol, vec3(0.2126, 0.7152, 0.0722));
+		if ((m.flags & MF_EMIS_CUSTOM_COLOR) != 0) {
+			s.emission = m.emisColor * mask * m.emis;
+		} else if ((m.flags & MF_EMIS_MAIN_COLOR) != 0) {
+			s.emission = base * mask * m.emis;
+		} else {
+			s.emission = emsCol * m.emis;
+		}
 	} else if ((m.flags & MF_FULLBRIGHT) != 0) {
 		s.emission = base * m.emis;
 	}
@@ -2436,6 +2515,7 @@ void main() {
 				atlasColor: mats.atlasColor,
 				atlasMER: mats.atlasMER,
 				atlasNormal: mats.atlasNormal,
+				atlasEmissive: mats.atlasEmissive,
 				bounds: computeBounds(geo.positions, n),
 				stats: {
 					tris: n,
@@ -2455,7 +2535,7 @@ void main() {
 			const s = this.scene;
 			if (!s || !gl) { this.scene = null; return; }
 			[s.texTriPos, s.texTriAttr, s.texBVH, s.texMat].forEach(t => { if (t && t.texture) gl.deleteTexture(t.texture); });
-			[s.texLights, s.atlasColor, s.atlasMER, s.atlasNormal].forEach(t => { if (t) gl.deleteTexture(t); });
+			[s.texLights, s.atlasColor, s.atlasMER, s.atlasNormal, s.atlasEmissive].forEach(t => { if (t) gl.deleteTexture(t); });
 			this.scene = null;
 		}
 
@@ -2605,6 +2685,7 @@ void main() {
 			this.bindTex(8, this.env.tex, 'uEnv', p);
 			this.bindTex(9, this.env.cond, 'uEnvCond', p);
 			this.bindTex(10, this.env.marg, 'uEnvMarg', p);
+			this.bindTex(15, s.atlasEmissive || this.dummy2D, 'uAtlasE', p);
 
 			gl.uniform2f(u.uResolution, this.width, this.height);
 			gl.uniform1i(u.uMaxBounce, settings.max_bounce | 0);
@@ -2896,60 +2977,100 @@ void main() {
 	font-size: 11px; color: #fff; text-shadow: 0 1px 3px #000;
 	background: rgba(0,0,0,0.45); padding: 3px 7px; border-radius: 3px;
 }
+#ptr_watermark {
+	position: absolute; left: 12px; bottom: 10px; pointer-events: none;
+	font-family: sans-serif; line-height: 1; white-space: nowrap;
+	text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
 #ptr_sidebar {
-	width: 306px; flex: 0 0 306px; overflow-y: auto; overflow-x: hidden;
-	padding: 4px 8px 12px 8px; background: var(--color-ui);
-	border-left: 1px solid var(--color-border);
+	width: 360px; flex: 0 0 360px; display: flex; min-height: 0;
+	background: var(--color-ui); border-left: 1px solid var(--color-border);
 }
-.ptr_section > summary {
-	cursor: pointer; padding: 5px 2px; font-weight: 600; list-style: none;
-	border-bottom: 1px solid var(--color-border); user-select: none;
-	color: var(--color-light);
+.ptr_tabs {
+	flex: 0 0 42px; display: flex; flex-direction: column; align-items: stretch;
+	padding: 6px 0; gap: 2px; background: var(--color-back);
+	border-right: 1px solid var(--color-border); overflow-y: auto;
 }
-.ptr_section > summary::-webkit-details-marker { display: none; }
-.ptr_section > summary::before { content: '▸ '; opacity: 0.7; }
-.ptr_section[open] > summary::before { content: '▾ '; }
-.ptr_section { margin-bottom: 4px; }
+.ptr_tab {
+	width: 100%; min-width: 0; height: 38px; display: flex; align-items: center; justify-content: center;
+	background: transparent; border: none; cursor: pointer; position: relative;
+	color: var(--color-subtle_text); padding: 0; box-shadow: none;
+}
+.ptr_tab .material-icons { font-size: 19px; max-width: 19px; }
+.ptr_tab:hover { color: var(--color-text); background: var(--color-selected); }
+.ptr_tab.active { color: var(--color-light); background: var(--color-selected); }
+.ptr_tab.active::before {
+	content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px;
+	background: var(--color-accent); border-radius: 0 2px 2px 0;
+}
+.ptr_tabpanes { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 10px; min-width: 0; }
+.ptr_tabpane { display: none; }
+.ptr_tabpane.active { display: block; }
+.ptr_card {
+	background: var(--color-back); border: 1px solid var(--color-border);
+	border-radius: 6px; padding: 9px 10px 10px; margin-bottom: 10px;
+}
+.ptr_card_head {
+	display: flex; align-items: center; gap: 6px; margin-bottom: 7px;
+	font-size: 12px; font-weight: 600; color: var(--color-light);
+}
+.ptr_card_head .material-icons { font-size: 16px; max-width: 16px; opacity: 0.85; }
 .ptr_row {
-	display: flex; align-items: center; gap: 6px; margin: 4px 0; min-height: 22px;
+	display: flex; align-items: center; gap: 6px; margin: 5px 0; min-height: 22px;
 }
-.ptr_row > label { flex: 0 0 104px; font-size: 12px; color: var(--color-text); }
+.ptr_row > label { flex: 0 0 96px; font-size: 12px; color: var(--color-text); }
 .ptr_row > .ptr_ctrl { flex: 1 1 auto; display: flex; align-items: center; gap: 5px; min-width: 0; }
 .ptr_row input[type=range] { flex: 1 1 auto; min-width: 40px; }
 .ptr_row input[type=number] {
-	width: 58px; flex: 0 0 58px; background: var(--color-back);
+	width: 56px; flex: 0 0 56px; background: var(--color-ui);
 	color: var(--color-text); border: 1px solid var(--color-border); border-radius: 3px;
 	padding: 1px 3px; font-size: 11px;
 }
-.ptr_row input[type=color] { width: 34px; height: 20px; padding: 0; border: 1px solid var(--color-border); background: none; }
+.ptr_row input[type=color] { width: 32px; height: 20px; padding: 0; border: 1px solid var(--color-border); background: none; border-radius: 3px; }
+.ptr_row input[type=text] {
+	flex: 1 1 auto; min-width: 0; background: var(--color-ui);
+	color: var(--color-text); border: 1px solid var(--color-border); border-radius: 3px;
+	padding: 2px 6px; font-size: 12px;
+}
 .ptr_row select {
-	flex: 1 1 auto; min-width: 0; background: var(--color-back); color: var(--color-text);
+	flex: 1 1 auto; min-width: 0; background: var(--color-ui); color: var(--color-text);
 	border: 1px solid var(--color-border); border-radius: 3px; padding: 2px; font-size: 12px;
 }
-.ptr_note { font-size: 11px; color: var(--color-subtle_text); margin: 4px 2px; line-height: 1.4; }
+.ptr_note { font-size: 11px; color: var(--color-subtle_text); margin: 4px 2px 2px; line-height: 1.4; }
 #ptr_footer {
-	display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+	display: flex; align-items: center; gap: 4px; padding: 6px 8px;
 	border-top: 1px solid var(--color-border); background: var(--color-ui);
 }
-#ptr_progress { flex: 1 1 auto; height: 6px; background: var(--color-back); border-radius: 3px; overflow: hidden; }
+#ptr_progress { flex: 1 1 auto; height: 6px; background: var(--color-back); border-radius: 3px; overflow: hidden; margin: 0 8px; }
 #ptr_progress > div { height: 100%; width: 0%; background: var(--color-accent); transition: width .1s linear; }
 #ptr_status { font-size: 11px; color: var(--color-subtle_text); white-space: nowrap; }
 .ptr_btn {
 	background: var(--color-button); color: var(--color-text); border: 1px solid var(--color-border);
-	border-radius: 3px; padding: 3px 10px; cursor: pointer; font-size: 12px; white-space: nowrap;
+	border-radius: 4px; padding: 4px 11px; cursor: pointer; font-size: 12px; white-space: nowrap;
+	display: inline-flex; align-items: center; gap: 5px;
 }
+.ptr_btn .material-icons { font-size: 15px; max-width: 15px; }
 .ptr_btn:hover { background: var(--color-selected); }
-.ptr_btn.accent { background: var(--color-accent); color: var(--color-accent_text); }
+.ptr_btn.accent { background: var(--color-accent); color: var(--color-accent_text); border-color: var(--color-accent); }
+.ptr_iconbtn {
+	width: 27px; min-width: 0; height: 27px; flex: 0 0 27px; display: flex; align-items: center; justify-content: center;
+	background: transparent; color: var(--color-text); border: 1px solid transparent;
+	border-radius: 4px; cursor: pointer; padding: 0; box-shadow: none;
+}
+.ptr_iconbtn .material-icons { font-size: 17px; max-width: 17px; }
+.ptr_iconbtn:hover { background: var(--color-selected); border-color: var(--color-border); }
 .ptr_presets { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
 .ptr_presets .ptr_btn { padding: 2px 7px; font-size: 11px; }
-.ptr_dialog_root .dialog_content { padding: 0 !important; overflow: hidden !important; }
+.ptr_dialog_root .dialog_content { margin: 0 !important; padding: 0 !important; overflow: hidden !important; height: 100% !important; max-height: none !important; box-sizing: border-box; }
+.ptr_dialog_root .dialog_wrapper { min-height: 0; }
 .ptr_dialog_root .dialog_handle { cursor: move; }
-#ptr_matlist { max-height: 260px; overflow-y: auto; }
+#ptr_matlist { margin-top: 4px; }
 .ptr_mat {
-	border: 1px solid var(--color-border); border-radius: 3px; margin: 4px 0; padding: 4px;
+	border: 1px solid var(--color-border); border-radius: 6px; margin: 6px 0; padding: 6px 8px;
+	background: var(--color-ui);
 }
-.ptr_mat > .ptr_mat_head { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 2px; }
-.ptr_mat > .ptr_mat_head img { width: 20px; height: 20px; image-rendering: pixelated; background: #0006; }
+.ptr_mat > .ptr_mat_head { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 3px; font-weight: 600; }
+.ptr_mat > .ptr_mat_head img { width: 20px; height: 20px; image-rendering: pixelated; background: #0006; border-radius: 3px; }
 `;
 
 	function el(tag, attrs, children) {
@@ -3057,6 +3178,8 @@ void main() {
 		vignette_enable: 'post', vignette_strength: 'post',
 		sharpen_enable: 'post', sharpen_strength: 'post',
 		grain_enable: 'post', grain_strength: 'post',
+		watermark_enable: 'post', watermark_text: 'post', watermark_size: 'post',
+		watermark_opacity: 'post', watermark_color: 'post',
 		res_mode: 'resize', res_width: 'resize', res_height: 'resize',
 		render_mode: 'post', preview_samples: 'post', final_samples: 'post',
 		auto_follow: 'post', auto_sync: 'post', interactive_scale: 'post',
@@ -3180,6 +3303,15 @@ void main() {
 		return makeRow(label, [box]);
 	}
 
+	function rowText(label, key, placeholder) {
+		const s = PTR.settings;
+		const inp = el('input', { type: 'text', value: s[key] || '' });
+		if (placeholder) inp.setAttribute('placeholder', placeholder);
+		inp.addEventListener('input', () => { s[key] = inp.value; onSettingChanged(key); });
+		register(key, v => { inp.value = v || ''; });
+		return makeRow(label, [inp]);
+	}
+
 	function rowColor(label, key) {
 		const s = PTR.settings;
 		const inp = el('input', { type: 'color', value: s[key] });
@@ -3201,10 +3333,36 @@ void main() {
 		return makeRow(label, [sel]);
 	}
 
-	function section(title, open, children) {
-		const det = el('details', { class: 'ptr_section' }, [el('summary', { text: title })].concat(children));
-		if (open) det.setAttribute('open', '');
-		return det;
+	function card(title, icon, children) {
+		const head = el('div', { class: 'ptr_card_head' }, [
+			el('i', { class: 'material-icons', text: icon }),
+			el('span', { text: title }),
+		]);
+		return el('div', { class: 'ptr_card' }, [head].concat(children));
+	}
+
+	function buildTabs(tabs) {
+		const wrap = el('div', { id: 'ptr_sidebar' });
+		const strip = el('div', { class: 'ptr_tabs' });
+		const panes = el('div', { class: 'ptr_tabpanes' });
+		tabs.forEach((tab, i) => {
+			const btn = el('button', { class: 'ptr_tab', title: tab.title }, [
+				el('i', { class: 'material-icons', text: tab.icon }),
+			]);
+			const pane = el('div', { class: 'ptr_tabpane' }, tab.cards);
+			btn.addEventListener('click', () => {
+				strip.querySelectorAll('.ptr_tab').forEach(b => b.classList.remove('active'));
+				panes.querySelectorAll('.ptr_tabpane').forEach(p => p.classList.remove('active'));
+				btn.classList.add('active');
+				pane.classList.add('active');
+			});
+			if (i === 0) { btn.classList.add('active'); pane.classList.add('active'); }
+			strip.appendChild(btn);
+			panes.appendChild(pane);
+		});
+		wrap.appendChild(strip);
+		wrap.appendChild(panes);
+		return wrap;
 	}
 
 	function onSettingChanged(key) {
@@ -3223,6 +3381,61 @@ void main() {
 			return;
 		}
 		t.reset();
+	}
+
+	function exportSettingsToClipboard() {
+		try {
+			const data = {};
+			for (const k in DEFAULTS) data[k] = PTR.settings[k];
+			const payload = { __pathtracer_settings: true, version: 1, data: data };
+			const text = JSON.stringify(payload);
+			if (typeof Clipbench !== 'undefined' && Clipbench.setText) {
+				Clipbench.setText(text);
+			} else if (navigator.clipboard) {
+				navigator.clipboard.writeText(text);
+			} else {
+				throw new Error('当前环境不支持写入剪贴板');
+			}
+			Blockbench.showQuickMessage('渲染设置已复制到剪贴板', 2000);
+		} catch (err) { showError(err); }
+	}
+
+	function applyImportedSettings(payload) {
+		if (!payload || !payload.__pathtracer_settings || !payload.data) {
+			throw new Error('剪贴板内容不是有效的路径追踪渲染设置');
+		}
+		clearTimeout(PTR.rebuildTimer);
+		const data = payload.data;
+		for (const k in DEFAULTS) if (data[k] !== undefined) PTR.settings[k] = data[k];
+		if (PTR.settings.env_mode === 'image' && !PTR.customEnv) {
+			PTR.settings.env_mode = 'sky';
+		}
+		syncControls();
+		if (PTR.updateModeButton) PTR.updateModeButton();
+		saveSettings();
+		const t = PTR.tracer;
+		if (t) {
+			try {
+				t.setEnvironment(PTR.settings, PTR.customEnv);
+				applyResolution();
+				rebuildScene();
+				t.reset();
+			} catch (err) { showError(err); }
+		}
+		Blockbench.showQuickMessage('已从剪贴板导入渲染设置', 2000);
+	}
+
+	async function importSettingsFromClipboard() {
+		try {
+			if (!navigator.clipboard || !navigator.clipboard.readText) {
+				throw new Error('当前环境不支持读取剪贴板');
+			}
+			const text = await navigator.clipboard.readText();
+			if (!text) throw new Error('剪贴板为空');
+			let payload;
+			try { payload = JSON.parse(text); } catch (err) { throw new Error('剪贴板内容不是有效的 JSON'); }
+			applyImportedSettings(payload);
+		} catch (err) { showError(err); }
 	}
 
 	function resetToDefaults() {
@@ -3284,6 +3497,7 @@ void main() {
 			PTR.lastPasses = 0;
 		}
 		t.resize(nw, nh);
+		updateWatermarkPreview();
 	}
 
 	function setInteracting(on) {
@@ -3335,6 +3549,37 @@ void main() {
 		if (PTR.nodes.overlay) {
 			PTR.nodes.overlay.textContent = t.spp >= max ? '渲染完成 · ' + t.spp + ' spp' : t.spp + ' spp';
 		}
+		updateWatermarkPreview();
+	}
+
+	function updateWatermarkPreview() {
+		const wm = PTR.nodes.watermark;
+		const t = PTR.tracer;
+		if (!wm) return;
+		const s = PTR.settings;
+		if (!s.watermark_enable || !s.watermark_text || !t || !t.width || !t.height) {
+			wm.style.display = 'none';
+			return;
+		}
+		const vp = PTR.nodes.viewport;
+		const vw = vp ? vp.clientWidth : 0;
+		const vh = vp ? vp.clientHeight : 0;
+		if (!vw || !vh) { wm.style.display = 'none'; return; }
+		const renderAspect = t.width / t.height;
+		const boxAspect = vw / vh;
+		let dispW, dispH;
+		if (renderAspect > boxAspect) { dispW = vw; dispH = vw / renderAspect; }
+		else { dispH = vh; dispW = vh * renderAspect; }
+		const offX = (vw - dispW) / 2;
+		const offY = (vh - dispH) / 2;
+		const scale = dispH / t.height;
+		wm.style.display = 'block';
+		wm.style.left = offX + Math.max(4, dispW * 0.02) + 'px';
+		wm.style.bottom = offY + Math.max(4, dispH * 0.02) + 'px';
+		wm.style.fontSize = Math.max(6, s.watermark_size * scale) + 'px';
+		wm.style.color = s.watermark_color;
+		wm.style.opacity = s.watermark_opacity;
+		wm.textContent = s.watermark_text;
 	}
 
 	function loop() {
@@ -3455,6 +3700,54 @@ void main() {
 			mk('透射', 'transmission', 0, 1, 0.01, 0);
 			mk('Alpha 阈值', 'alpha_cutoff', 0, 1, 0.01, PTR.settings.alpha_cutoff);
 
+			const emisMapSel = el('select');
+			emisMapSel.appendChild(el('option', { value: '', text: '无（跟随全局自发光）' }));
+			textures.forEach(t2 => {
+				const label = t2.uuid === tex.uuid ? (t2.name || '(未命名)') + '（自身）' : (t2.name || '(未命名)');
+				emisMapSel.appendChild(el('option', { value: t2.uuid, text: label }));
+			});
+			emisMapSel.value = ov.emissive_map || '';
+
+			const emisColorSel = el('select');
+			[['map', '跟随发光贴图颜色'], ['main', '跟随主贴图颜色'], ['custom', '手动选择颜色']].forEach(pair => {
+				emisColorSel.appendChild(el('option', { value: pair[0], text: pair[1] }));
+			});
+			const emisColorSrc = ov.emissive_color_source === 'main' ? 'main' : (ov.emissive_color_source === 'custom' ? 'custom' : 'map');
+			emisColorSel.value = emisColorSrc;
+			emisColorSel.disabled = !ov.emissive_map;
+
+			const emisColorPicker = el('input', { type: 'color', value: ov.emissive_color || '#ffffff' });
+			const emisColorRow = makeRow('发光颜色', [emisColorPicker]);
+			emisColorRow.style.display = emisColorSrc === 'custom' ? '' : 'none';
+
+			emisMapSel.addEventListener('change', () => {
+				if (emisMapSel.value) ov.emissive_map = emisMapSel.value;
+				else delete ov.emissive_map;
+				emisColorSel.disabled = !ov.emissive_map;
+				saveSettings();
+				clearTimeout(PTR.rebuildTimer);
+				PTR.rebuildTimer = setTimeout(() => rebuildScene(), 120);
+			});
+			emisColorSel.addEventListener('change', () => {
+				ov.emissive_color_source = emisColorSel.value;
+				emisColorRow.style.display = emisColorSel.value === 'custom' ? '' : 'none';
+				saveSettings();
+				clearTimeout(PTR.rebuildTimer);
+				PTR.rebuildTimer = setTimeout(() => rebuildScene(), 120);
+			});
+			emisColorPicker.addEventListener('input', () => {
+				ov.emissive_color = emisColorPicker.value;
+				saveSettings();
+				clearTimeout(PTR.rebuildTimer);
+				PTR.rebuildTimer = setTimeout(() => rebuildScene(), 120);
+			});
+			box.appendChild(makeRow('发光贴图', [emisMapSel]));
+			box.appendChild(makeRow('发光颜色来源', [emisColorSel]));
+			box.appendChild(emisColorRow);
+			if (hasMer) {
+				box.appendChild(el('div', { class: 'ptr_note', text: '该材质带 MER 通道，发光贴图设置会被 MER 的自发光通道覆盖。' }));
+			}
+
 			const amodeSel = el('select');
 			[['', '跟随全局'], ['cutout', '裁剪'], ['blend', '混合'], ['opaque', '忽略透明']].forEach(pair => {
 				amodeSel.appendChild(el('option', { value: pair[0], text: pair[1] }));
@@ -3483,25 +3776,30 @@ void main() {
 
 	function buildSidebar() {
 		PTR.controls = [];
-		const bar = el('div', { id: 'ptr_sidebar' });
 
-		bar.appendChild(section('渲染', true, [
-			rowSelect('分辨率', 'res_mode', { fit: '自适应窗口', custom: '自定义' }),
-			rowNumber('宽度', 'res_width', 32, 8192, 1),
-			rowNumber('高度', 'res_height', 32, 8192, 1),
-			rowSelect('当前模式', 'render_mode', { preview: '预览（低采样）', final: '最终渲染' }),
-			rowNumber('预览采样数', 'preview_samples', 1, 100000, 1),
-			rowNumber('最终采样数', 'final_samples', 1, 100000, 1),
-			el('div', { class: 'ptr_note', text: '调试时可以使用预览模式，渲染速度更快。确认效果后切到“最终渲染”获取更清晰的图片。' }),
-			rowSlider('最大反弹', 'max_bounce', 1, 16, 1, 0),
-			rowSlider('光源采样数', 'light_samples', 1, 16, 1, 0),
-			el('div', { class: 'ptr_note', text: '每次反弹对灯光/太阳/环境光多次采样取平均，可显著降低噪点，但会增加相应倍数的渲染开销。' }),
-			rowSlider('亮度截断', 'clamp_value', 0, 100, 0.5, 1),
-			rowSlider('交互降采样', 'interactive_scale', 0.2, 1, 0.05, 2),
-			rowCheck('线性过滤纹理', 'filter_linear'),
-			rowCheck('自动重载模型', 'auto_follow'),
-			el('div', { class: 'ptr_note', text: '亮度截断可抑制萤火虫噪点，设为 0 表示关闭（更物理准确但收敛更慢）' }),
-		]));
+		const renderCards = [
+			card('分辨率与采样', 'photo_size_select_large', [
+				rowSelect('分辨率', 'res_mode', { fit: '自适应窗口', custom: '自定义' }),
+				rowNumber('宽度', 'res_width', 32, 8192, 1),
+				rowNumber('高度', 'res_height', 32, 8192, 1),
+				rowSelect('当前模式', 'render_mode', { preview: '预览（低采样）', final: '成片渲染' }),
+				rowNumber('预览采样数', 'preview_samples', 1, 100000, 1),
+				rowNumber('成片采样数', 'final_samples', 1, 100000, 1),
+				el('div', { class: 'ptr_note', text: '调试时可以使用预览模式，渲染速度更快。确认效果后切到“成片渲染”获取更清晰的图片。' }),
+			]),
+			card('光线追踪', 'call_split', [
+				rowSlider('最大反弹', 'max_bounce', 1, 16, 1, 0),
+				rowSlider('光源采样数', 'light_samples', 1, 16, 1, 0),
+				el('div', { class: 'ptr_note', text: '每次反弹对灯光/太阳/环境光多次采样取平均，可显著降低噪点，但会增加相应倍数的渲染开销。' }),
+				rowSlider('亮度截断', 'clamp_value', 0, 100, 0.5, 1),
+				el('div', { class: 'ptr_note', text: '亮度截断可抑制萤火虫噪点，设为 0 表示关闭（更物理准确但收敛更慢）' }),
+			]),
+			card('性能', 'speed', [
+				rowSlider('交互降采样', 'interactive_scale', 0.2, 1, 0.05, 2),
+				rowCheck('线性过滤纹理', 'filter_linear'),
+				rowCheck('自动重载模型', 'auto_follow'),
+			]),
+		];
 
 		const camBtns = el('div', { class: 'ptr_presets' });
 		const btnSync = el('button', { class: 'ptr_btn', text: '同步主视图' });
@@ -3521,15 +3819,19 @@ void main() {
 		camBtns.appendChild(btnSync);
 		camBtns.appendChild(btnFrame);
 
-		bar.appendChild(section('相机', true, [
-			camBtns,
-			rowCheck('正交投影', 'ortho'),
-			rowSlider('FOV', 'fov', 5, 120, 1, 0),
-			rowSlider('光圈', 'aperture', 0, 8, 0.05, 2),
-			rowCheck('自动对焦', 'auto_focus'),
-			rowNumber('对焦距离', 'focus_distance', 0, 10000, 0.5),
-			rowCheck('自动跟随主视图', 'auto_sync'),
-		]));
+		const cameraCards = [
+			card('相机', 'videocam', [
+				camBtns,
+				rowCheck('正交投影', 'ortho'),
+				rowSlider('FOV', 'fov', 5, 120, 1, 0),
+				rowCheck('自动跟随主视图', 'auto_sync'),
+			]),
+			card('景深', 'filter_center_focus', [
+				rowSlider('光圈', 'aperture', 0, 8, 0.05, 2),
+				rowCheck('自动对焦', 'auto_focus'),
+				rowNumber('对焦距离', 'focus_distance', 0, 10000, 0.5),
+			]),
+		];
 
 		const presets = el('div', { class: 'ptr_presets' });
 		Object.keys(SKY_PRESETS).forEach(name => {
@@ -3569,78 +3871,104 @@ void main() {
 		envBtns.appendChild(btnClear);
 		PTR.nodes.envName = el('span', { class: 'ptr_note', text: '(未载入)' });
 
-		bar.appendChild(section('环境光', true, [
-			presets,
-			rowSelect('环境类型', 'env_mode', { sky: '程序化天空', gradient: '渐变', solid: '纯色', image: 'HDR / 图片' }),
-			envBtns,
-			PTR.nodes.envName,
-			rowSlider('环境强度', 'env_intensity', 0, 20, 0.05, 2),
-			rowSlider('环境旋转', 'env_rotation', -180, 180, 1, 0),
-			rowSelect('背景', 'bg_mode', { env: '显示环境', color: '纯色', transparent: '透明' }),
-			rowColor('背景颜色', 'bg_color'),
-			rowCheck('启用太阳', 'sun_enable'),
-			rowSlider('太阳高度', 'sun_elevation', -10, 90, 0.5, 1),
-			rowSlider('太阳方位', 'sun_azimuth', 0, 360, 1, 0),
-			rowSlider('太阳角直径', 'sun_angle', 0.25, 45, 0.05, 2),
-			rowSlider('太阳强度', 'sun_intensity', 0, 40, 0.1, 2),
-			rowColor('太阳颜色', 'sun_color'),
-			rowColor('天顶色', 'sky_zenith'),
-			rowColor('地平线色', 'sky_horizon'),
-			rowColor('地面色', 'sky_ground'),
-			rowSlider('雾霾', 'sky_haze', 0, 1, 0.01, 2),
-			rowColor('渐变-上', 'grad_top'),
-			rowColor('渐变-下', 'grad_bottom'),
-			rowColor('纯色环境', 'solid_color'),
-		]));
-
-		bar.appendChild(section('地面', false, [
-			rowCheck('启用地面', 'ground_on'),
-			rowCheck('阴影捕捉（透明）', 'ground_catcher'),
-			rowNumber('地面高度', 'ground_y', -1000, 1000, 0.5),
-			rowColor('颜色', 'ground_color'),
-			rowSlider('粗糙度', 'ground_rough', 0.02, 1, 0.01, 2),
-			rowSlider('金属度', 'ground_metal', 0, 1, 0.01, 2),
-			rowNumber('半径（0=无限）', 'ground_radius', 0, 100000, 1),
-			el('div', { class: 'ptr_note', text: '阴影捕捉模式下地面本身不着色，只在背景中输出阴影的 alpha，配合“背景=透明”可导出带投影的透明 PNG' }),
-		]));
+		const envCards = [
+			card('环境光', 'wb_sunny', [
+				presets,
+				rowSelect('环境类型', 'env_mode', { sky: '程序化天空', gradient: '渐变', solid: '纯色', image: 'HDR / 图片' }),
+				envBtns,
+				PTR.nodes.envName,
+				rowSlider('环境强度', 'env_intensity', 0, 20, 0.05, 2),
+				rowSlider('环境旋转', 'env_rotation', -180, 180, 1, 0),
+				rowSelect('背景', 'bg_mode', { env: '显示环境', color: '纯色', transparent: '透明' }),
+				rowColor('背景颜色', 'bg_color'),
+			]),
+			card('太阳', 'brightness_high', [
+				rowCheck('启用太阳', 'sun_enable'),
+				rowSlider('太阳高度', 'sun_elevation', -10, 90, 0.5, 1),
+				rowSlider('太阳方位', 'sun_azimuth', 0, 360, 1, 0),
+				rowSlider('太阳角直径', 'sun_angle', 0.25, 45, 0.05, 2),
+				rowSlider('太阳强度', 'sun_intensity', 0, 40, 0.1, 2),
+				rowColor('太阳颜色', 'sun_color'),
+			]),
+			card('天空颜色', 'gradient', [
+				rowColor('天顶色', 'sky_zenith'),
+				rowColor('地平线色', 'sky_horizon'),
+				rowColor('地面色', 'sky_ground'),
+				rowSlider('雾霾', 'sky_haze', 0, 1, 0.01, 2),
+				rowColor('渐变-上', 'grad_top'),
+				rowColor('渐变-下', 'grad_bottom'),
+				rowColor('纯色环境', 'solid_color'),
+			]),
+			card('地面', 'landscape', [
+				rowCheck('启用地面', 'ground_on'),
+				rowCheck('阴影捕捉（透明）', 'ground_catcher'),
+				rowNumber('地面高度', 'ground_y', -1000, 1000, 0.5),
+				rowColor('颜色', 'ground_color'),
+				rowSlider('粗糙度', 'ground_rough', 0.02, 1, 0.01, 2),
+				rowSlider('金属度', 'ground_metal', 0, 1, 0.01, 2),
+				rowNumber('半径（0=无限）', 'ground_radius', 0, 100000, 1),
+				el('div', { class: 'ptr_note', text: '阴影捕捉模式下地面本身不着色，只在背景中输出阴影的 alpha，配合“背景=透明”可导出带投影的透明 PNG' }),
+			]),
+		];
 
 		PTR.nodes.matlist = el('div', { id: 'ptr_matlist' });
-		bar.appendChild(section('材质', false, [
-			rowSlider('默认粗糙度', 'def_roughness', 0, 1, 0.01, 2),
-			rowSlider('默认金属度', 'def_metalness', 0, 1, 0.01, 2),
-			rowSlider('自发光强度', 'emissive_strength', 0, 40, 0.1, 2),
-			rowSelect('渲染面', 'render_sides', { auto: '跟随 Blockbench', double: '强制双面', front: '强制单面' }),
-			el('div', { class: 'ptr_note', text: '跟随 Blockbench 时会按格式/纹理做背面剔除（Java 方块模型为单面），负尺寸方块因此只显示内部贴图，与视图一致。' }),
-			rowSelect('Alpha 模式', 'alpha_mode', { cutout: '裁剪（Minecraft）', blend: '混合（半透明）', opaque: '忽略透明' }),
-			rowSlider('默认 Alpha 阈值', 'alpha_cutoff', 0, 1, 0.01, 2),
-			el('div', { class: 'ptr_note', text: '裁剪: alpha 低于阈值的像素完全不可见(树叶/栅栏)。混合: 按 alpha 随机穿透，可渲染染色玻璃等半透明材质。' }),
-			el('div', { class: 'ptr_note', text: '带 MER 通道的材质组会自动使用金属/自发光/粗糙贴图；纹理“发光”渲染模式会被当作自发光光源。' }),
-			PTR.nodes.matlist,
-		]));
+		const materialCards = [
+			card('材质默认值', 'palette', [
+				rowSlider('默认粗糙度', 'def_roughness', 0, 1, 0.01, 2),
+				rowSlider('默认金属度', 'def_metalness', 0, 1, 0.01, 2),
+				rowSlider('自发光强度', 'emissive_strength', 0, 40, 0.1, 2),
+				rowSelect('渲染面', 'render_sides', { auto: '跟随 Blockbench', double: '强制双面', front: '强制单面' }),
+				el('div', { class: 'ptr_note', text: '跟随 Blockbench 时会按格式/纹理做背面剔除（Java 方块模型为单面），负尺寸方块因此只显示内部贴图，与视图一致。' }),
+				rowSelect('Alpha 模式', 'alpha_mode', { cutout: '裁剪（Minecraft）', blend: '混合（半透明）', opaque: '忽略透明' }),
+				rowSlider('默认 Alpha 阈值', 'alpha_cutoff', 0, 1, 0.01, 2),
+				el('div', { class: 'ptr_note', text: '裁剪: alpha 低于阈值的像素完全不可见(树叶/栅栏)。混合: 按 alpha 随机穿透，可渲染染色玻璃等半透明材质。' }),
+				el('div', { class: 'ptr_note', text: '带 MER 通道的材质组会自动使用金属/自发光/粗糙贴图；纹理“发光”渲染模式会被当作自发光光源。' }),
+			]),
+			card('逐纹理覆盖', 'texture_add', [
+				PTR.nodes.matlist,
+			]),
+		];
 
-		bar.appendChild(section('后期', true, [
-			rowSelect('色调映射', 'tone_mapping', { none: '无', reinhard: 'Reinhard', aces: 'ACES', filmic: 'Filmic', agx: 'AgX' }),
-			rowSlider('曝光', 'exposure', 0.05, 8, 0.01, 2),
-			rowSlider('对比度', 'contrast', 0.2, 3, 0.01, 2),
-			rowSlider('饱和度', 'saturation', 0, 3, 0.01, 2),
-			rowCheck('降噪', 'denoise'),
-			rowSlider('降噪强度', 'denoise_strength', 0, 8, 0.05, 2),
-		]));
+		const postCards = [
+			card('色调映射', 'tune', [
+				rowSelect('色调映射', 'tone_mapping', { none: '无', reinhard: 'Reinhard', aces: 'ACES', filmic: 'Filmic', agx: 'AgX' }),
+				rowSlider('曝光', 'exposure', 0.05, 8, 0.01, 2),
+				rowSlider('对比度', 'contrast', 0.2, 3, 0.01, 2),
+				rowSlider('饱和度', 'saturation', 0, 3, 0.01, 2),
+			]),
+			card('降噪', 'blur_linear', [
+				rowCheck('降噪', 'denoise'),
+				rowSlider('降噪强度', 'denoise_strength', 0, 8, 0.05, 2),
+			]),
+			card('后处理效果', 'star', [
+				rowCheck('泛光 Bloom', 'bloom_enable'),
+				rowSlider('泛光阈值', 'bloom_threshold', 0, 10, 0.05, 2),
+				rowSlider('泛光强度', 'bloom_intensity', 0, 5, 0.01, 2),
+				rowSlider('泛光半径', 'bloom_radius', 0.2, 10, 0.1, 1),
+				rowCheck('暗角 Vignette', 'vignette_enable'),
+				rowSlider('暗角强度', 'vignette_strength', 0, 1.5, 0.01, 2),
+				rowCheck('锐化 Sharpen', 'sharpen_enable'),
+				rowSlider('锐化强度', 'sharpen_strength', 0, 2, 0.01, 2),
+				rowCheck('胶片颗粒', 'grain_enable'),
+				rowSlider('颗粒强度', 'grain_strength', 0, 0.3, 0.005, 3),
+			]),
+			card('水印', 'text_format', [
+				rowCheck('启用水印', 'watermark_enable'),
+				rowText('水印文本', 'watermark_text', '例如：© 你的名字'),
+				rowSlider('字号', 'watermark_size', 8, 96, 1, 0),
+				rowSlider('不透明度', 'watermark_opacity', 0, 1, 0.01, 2),
+				rowColor('颜色', 'watermark_color'),
+				el('div', { class: 'ptr_note', text: '水印会显示在画面左下角，并包含在“保存 PNG”导出的图片中。' }),
+			]),
+		];
 
-		bar.appendChild(section('后处理效果', false, [
-			rowCheck('泛光 Bloom', 'bloom_enable'),
-			rowSlider('泛光阈值', 'bloom_threshold', 0, 10, 0.05, 2),
-			rowSlider('泛光强度', 'bloom_intensity', 0, 5, 0.01, 2),
-			rowSlider('泛光半径', 'bloom_radius', 0.2, 10, 0.1, 1),
-			rowCheck('暗角 Vignette', 'vignette_enable'),
-			rowSlider('暗角强度', 'vignette_strength', 0, 1.5, 0.01, 2),
-			rowCheck('锐化 Sharpen', 'sharpen_enable'),
-			rowSlider('锐化强度', 'sharpen_strength', 0, 2, 0.01, 2),
-			rowCheck('胶片颗粒', 'grain_enable'),
-			rowSlider('颗粒强度', 'grain_strength', 0, 0.3, 0.005, 3),
-		]));
-
-		return bar;
+		return buildTabs([
+			{ title: '渲染', icon: 'speed', cards: renderCards },
+			{ title: '相机', icon: 'videocam', cards: cameraCards },
+			{ title: '环境', icon: 'wb_sunny', cards: envCards },
+			{ title: '材质', icon: 'palette', cards: materialCards },
+			{ title: '后期', icon: 'tune', cards: postCards },
+		]);
 	}
 
 	function loadEnvFile(file) {
@@ -3696,6 +4024,23 @@ void main() {
 		}
 	}
 
+	function drawWatermark(ctx, w, h) {
+		const s = PTR.settings;
+		if (!s.watermark_enable || !s.watermark_text) return;
+		const size = Math.max(6, s.watermark_size);
+		ctx.save();
+		ctx.font = size + 'px sans-serif';
+		ctx.textBaseline = 'bottom';
+		ctx.textAlign = 'left';
+		ctx.globalAlpha = clamp(s.watermark_opacity, 0, 1);
+		ctx.fillStyle = s.watermark_color;
+		ctx.shadowColor = 'rgba(0,0,0,0.6)';
+		ctx.shadowBlur = Math.max(2, size * 0.12);
+		const pad = Math.max(4, size * 0.35);
+		ctx.fillText(s.watermark_text, pad, h - pad);
+		ctx.restore();
+	}
+
 	function saveImage() {
 		const t = PTR.tracer;
 		if (!t || t.spp === 0) {
@@ -3704,7 +4049,18 @@ void main() {
 		}
 		try {
 			t.present(PTR.settings);
-			const dataUrl = t.canvas.toDataURL('image/png');
+			let dataUrl;
+			if (PTR.settings.watermark_enable && PTR.settings.watermark_text) {
+				const out = document.createElement('canvas');
+				out.width = t.canvas.width;
+				out.height = t.canvas.height;
+				const ctx = out.getContext('2d');
+				ctx.drawImage(t.canvas, 0, 0);
+				drawWatermark(ctx, out.width, out.height);
+				dataUrl = out.toDataURL('image/png');
+			} else {
+				dataUrl = t.canvas.toDataURL('image/png');
+			}
 			if (typeof Screencam !== 'undefined' && Screencam.returnScreenshot) {
 				Screencam.returnScreenshot(dataUrl);
 			} else {
@@ -3765,8 +4121,9 @@ void main() {
 
 	function buildWindow() {
 		const canvas = el('canvas', { id: 'ptr_canvas' });
-		const overlay = el('div', { id: 'ptr_overlay', text: '准备中（若长时间无法加载请点击 重载模型 按钮）…' });
-		const viewport = el('div', { id: 'ptr_viewport' }, [canvas, overlay]);
+		const overlay = el('div', { id: 'ptr_overlay', text: '准备中（首次加载可能会较为卡顿）…' });
+		const watermark = el('div', { id: 'ptr_watermark' });
+		const viewport = el('div', { id: 'ptr_viewport' }, [canvas, overlay, watermark]);
 		const sidebar = buildSidebar();
 		const root = el('div', { id: 'ptr_root' }, [viewport, sidebar]);
 
@@ -3774,15 +4131,19 @@ void main() {
 		const progress = el('div', { id: 'ptr_progress' }, [bar]);
 		const status = el('div', { id: 'ptr_status', text: '' });
 
-		const btnPause = el('button', { class: 'ptr_btn', text: '暂停' });
+		const btnPauseIcon = el('i', { class: 'material-icons', text: 'pause' });
+		const btnPauseLabel = el('span', { text: '暂停' });
+		const btnPause = el('button', { class: 'ptr_btn' }, [btnPauseIcon, btnPauseLabel]);
 		btnPause.addEventListener('click', () => {
 			PTR.paused = !PTR.paused;
-			btnPause.textContent = PTR.paused ? '继续' : '暂停';
+			btnPauseIcon.textContent = PTR.paused ? 'play_arrow' : 'pause';
+			btnPauseLabel.textContent = PTR.paused ? '继续' : '暂停';
 			PTR.lastFrame = performance.now();
 			updateStatus();
 		});
 
-		const btnMode = el('button', { class: 'ptr_btn', text: '切换到最终渲染' });
+		const btnModeLabel = el('span', { text: '切换到成片渲染' });
+		const btnMode = el('button', { class: 'ptr_btn' }, [btnModeLabel]);
 		btnMode.addEventListener('click', () => {
 			PTR.settings.render_mode = PTR.settings.render_mode === 'final' ? 'preview' : 'final';
 			syncControls();
@@ -3790,45 +4151,50 @@ void main() {
 			updateModeButton();
 			if (PTR.paused) {
 				PTR.paused = false;
-				btnPause.textContent = '暂停';
+				btnPauseIcon.textContent = 'pause';
+				btnPauseLabel.textContent = '暂停';
 				PTR.lastFrame = performance.now();
 			}
 			updateStatus();
 		});
 		function updateModeButton() {
 			const isFinal = PTR.settings.render_mode === 'final';
-			btnMode.textContent = isFinal ? '切换到预览' : '切换到最终渲染';
+			btnModeLabel.textContent = isFinal ? '切换到预览' : '切换到成片渲染';
 			btnMode.classList.toggle('accent', isFinal);
 		}
 		updateModeButton();
 		PTR.updateModeButton = updateModeButton;
-		const btnRestart = el('button', { class: 'ptr_btn', text: '重新开始' });
-		btnRestart.addEventListener('click', () => { if (PTR.tracer) PTR.tracer.reset(); });
-		const btnReload = el('button', { class: 'ptr_btn', text: '重载模型' });
-		btnReload.addEventListener('click', () => rebuildScene());
-		const btnDefault = el('button', { class: 'ptr_btn', text: '重置为默认参数' });
-		btnDefault.addEventListener('click', () => resetToDefaults());
-		const btnSave = el('button', { class: 'ptr_btn accent', text: '保存 PNG' });
+
+		const iconBtn = (icon, title, onClick) => {
+			const b = el('button', { class: 'ptr_iconbtn', title: title }, [el('i', { class: 'material-icons', text: icon })]);
+			b.addEventListener('click', onClick);
+			return b;
+		};
+		const btnRestart = iconBtn('replay', '重新开始', () => { if (PTR.tracer) PTR.tracer.reset(); });
+		const btnReload = iconBtn('refresh', '重载模型', () => rebuildScene());
+		const btnDefault = iconBtn('undo', '重置为默认参数', () => resetToDefaults());
+		const btnExport = iconBtn('file_upload', '导出配置（不含材质单独设置）到剪贴板', () => exportSettingsToClipboard());
+		const btnImport = iconBtn('file_download', '从剪贴板导入配置（不含材质单独设置）', () => importSettingsFromClipboard());
+		const btnSave = el('button', { class: 'ptr_btn accent' }, [
+			el('i', { class: 'material-icons', text: 'save' }),
+			el('span', { text: '保存 PNG' }),
+		]);
 		btnSave.addEventListener('click', saveImage);
-		const btnClose = el('button', { class: 'ptr_btn', text: '关闭' });
-		btnClose.addEventListener('click', () => {
-			closeRenderer();
-			if (PTR.dialog) {
-				try { PTR.dialog.close(0); } catch (e) { try { PTR.dialog.hide(); } catch (e2) { } }
-			}
-		});
+		const toolGroup = el('div', { style: { display: 'flex', alignItems: 'center', gap: '2px' } }, [
+			btnRestart, btnReload, btnDefault, btnExport, btnImport,
+		]);
 
 		const footer = el('div', { id: 'ptr_footer' }, [
-			status, progress, btnMode, btnPause, btnRestart, btnReload, btnDefault, btnSave, btnClose,
+			status, progress, btnMode, btnPause, toolGroup, btnSave,
 		]);
 
 		const wrapper = el('div', {
-			style: { display: 'flex', flexDirection: 'column', height: '68vh', minHeight: '420px' },
+			style: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: '420px' },
 		}, [root, footer]);
 
 		PTR.nodes = Object.assign(PTR.nodes || {}, {
 			canvas: canvas, overlay: overlay, viewport: viewport, sidebar: sidebar,
-			status: status, bar: bar, wrapper: wrapper, btnPause: btnPause,
+			status: status, bar: bar, wrapper: wrapper, btnPause: btnPause, watermark: watermark,
 		});
 		root.style.flex = '1 1 auto';
 		root.style.minHeight = '0';
@@ -3905,6 +4271,10 @@ void main() {
 			},
 		});
 		PTR.dialog.show();
+		if (PTR.dialog.object && !PTR.dialog.object.style.height) {
+			const h = Math.round(clamp(window.innerHeight * 0.72, 420, window.innerHeight - 60));
+			PTR.dialog.object.style.height = h + 'px';
+		}
 
 		setTimeout(() => {
 			try {
@@ -3950,7 +4320,7 @@ void main() {
 			'',
 			'官方更新地址：https://github.com/Null-K/blockbench-plugins'
 		].join('\n'),
-		version: '1.4.3',
+		version: '1.5.0',
 		min_version: '4.8.0',
 		variant: 'both',
 		tags: ['Rendering', 'Preview'],
