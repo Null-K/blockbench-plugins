@@ -1,5 +1,6 @@
 # blockbench-plugins
 
+> [!NOTE]
 > 当前安装插件版本号可以在 `Blockbench` 插件窗口内查看  
 > 新版本包含旧版本的所有功能
 > 
