@@ -9,6 +9,10 @@
 
 ### 如果在使用中遇到问题，可以加入官方群 `1104261361` 进行反馈
 
+<a href="https://afdian.com/a/puddingkc" target="_blank">
+    <img width="150" src="https://pic1.afdiancdn.com/static/img/welcome/button-sponsorme.png" alt="在爱发电支持我">
+</a>
+
 ---
 
 ### hsl_shift_brush.js
