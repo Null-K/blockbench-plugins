@@ -129,7 +129,19 @@
 		];
 	}
 	function vDot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-
+	const CUBE_FACE_NORMALS = {
+		east: [1, 0, 0], west: [-1, 0, 0],
+		up: [0, 1, 0], down: [0, -1, 0],
+		south: [0, 0, 1], north: [0, 0, -1],
+	};
+	function triangleFacesInward(indices, positions, normal) {
+		const a = indices[0] * 3, b = indices[1] * 3, c = indices[2] * 3;
+		const geometric = vCross(
+			[positions[b] - positions[a], positions[b + 1] - positions[a + 1], positions[b + 2] - positions[a + 2]],
+			[positions[c] - positions[a], positions[c + 1] - positions[a + 1], positions[c + 2] - positions[a + 2]]
+		);
+		return vDot(geometric, normal) < 0;
+	}
 	function nextPow2(n) {
 		let p = 1;
 		while (p < n) p *= 2;
@@ -529,6 +541,8 @@
 		const uvs = [];
 		const texRefs = [];
 		const flips = [];
+		const negativeCube = [];
+		const insideOnly = [];
 
 		if (typeof Canvas !== 'undefined' && Canvas.scene) Canvas.scene.updateMatrixWorld(true);
 
@@ -557,6 +571,8 @@
 			const mirrored = mat3Determinant(m) < 0 ? 1 : 0;
 
 			const fkeys = faceKeysPerTriangle(element, triCount);
+			const hasNegativeSize = element instanceof Cube && element.from && element.to
+				&& element.to.some((v, axis) => v < element.from[axis]);
 			let fallbackTexture = defaultTexture;
 			if (mesh.material && !Array.isArray(mesh.material) && matLookup.has(mesh.material)) {
 				fallbackTexture = matLookup.get(mesh.material);
@@ -571,6 +587,8 @@
 				const i1 = index ? index.array[t * 3 + 1] : t * 3 + 1;
 				const i2 = index ? index.array[t * 3 + 2] : t * 3 + 2;
 				const idx = [i0, i1, i2];
+				const cubeNormal = hasNegativeSize && fkeys ? CUBE_FACE_NORMALS[fkeys[t]] : null;
+				const insideOnlyFace = !!(cubeNormal && triangleFacesInward(idx, pa, cubeNormal));
 
 				const wp = [];
 				for (let k = 0; k < 3; k++) {
@@ -584,7 +602,10 @@
 
 				for (let k = 0; k < 3; k++) positions.push(wp[k][0], wp[k][1], wp[k][2]);
 
-				if (na) {
+				if (cubeNormal) {
+					const n = vNorm(transformDir(nm, cubeNormal[0], cubeNormal[1], cubeNormal[2]));
+					for (let k = 0; k < 3; k++) normals.push(n[0], n[1], n[2]);
+				} else if (na) {
 					for (let k = 0; k < 3; k++) {
 						const o = idx[k] * 3;
 						const n = vNorm(transformDir(nm, na[o], na[o + 1], na[o + 2]));
@@ -615,6 +636,8 @@
 				}
 				texRefs.push(tex || null);
 				flips.push(mirrored);
+				negativeCube.push(!!hasNegativeSize);
+				insideOnly.push(insideOnlyFace);
 			}
 		});
 
@@ -624,6 +647,8 @@
 			uvs: new Float32Array(uvs),
 			texRefs: texRefs,
 			flips: flips,
+			negativeCube: negativeCube,
+			insideOnly: insideOnly,
 			triCount: texRefs.length,
 		};
 	}
@@ -1237,6 +1262,11 @@ vec4 fTri(int i) { return fetchAt(uTriPos, i, uTriPosW); }
 vec4 fAttr(int i) { return fetchAt(uTriAttr, i, uTriAttrW); }
 vec4 fBVH(int i) { return fetchAt(uBVH, i, uBVHW); }
 vec4 fMat(int i) { return fetchAt(uMat, i, uMatW); }
+int triCullMode(int tri) { return int(fTri(tri * 3 + 1).w + 0.5); }
+bool isNegativeCubeTri(int tri) { return triCullMode(tri) >= 3; }
+bool isInsideOnlyTri(int tri) {
+	return triCullMode(tri) == 6;
+}
 
 struct Mat {
 	vec3 tint;
@@ -1318,6 +1348,8 @@ void triIntersect(int i, vec3 ro, vec3 rd, inout Hit hit) {
 	vec3 pv = cross(rd, e2);
 	float det = dot(e1, pv);
 	int cull = int(p1.w + 0.5);
+	if (cull >= 6) cull = 0;
+	else if (cull >= 3) cull -= 3;
 	if (cull == 1 && det <= 0.0) return;
 	if (cull == 2 && det >= 0.0) return;
 	if (abs(det) < 1e-12) return;
@@ -1406,6 +1438,14 @@ vec2 triUV(int i, vec2 bc) {
 	vec2 uv2 = vec2(a3.y, a3.z);
 	float w = 1.0 - bc.x - bc.y;
 	return uv0 * w + uv1 * bc.x + uv2 * bc.y;
+}
+
+bool insideOnlyHitFromOutside(int i, vec2 bc, vec3 rd) {
+	vec3 n0 = fAttr(i * 4 + 0).xyz;
+	vec3 n1 = fAttr(i * 4 + 1).xyz;
+	vec3 n2 = fAttr(i * 4 + 2).xyz;
+	vec3 outward = normalize(n0 * (1.0 - bc.x - bc.y) + n1 * bc.x + n2 * bc.y);
+	return dot(rd, outward) < 0.0;
 }
 
 Mat matOfTri(int i) {
@@ -1747,6 +1787,7 @@ bool anyHitBVH(vec3 ro, vec3 rd, float maxT) {
 				h.bc = vec2(0.0);
 				triIntersect(start + i, ro, rd, h);
 				if (h.tri >= 0) {
+					if (isNegativeCubeTri(h.tri)) continue;
 					Mat hm = matOfTri(h.tri);
 					if (hm.amode == 0 || !alphaPassThrough(hm, alphaOfTri(h.tri, h.bc, hm))) return true;
 				}
@@ -1872,6 +1913,12 @@ vec3 tracePath(vec3 ro, vec3 rd, out float alphaOut, out vec3 gAlbedo, out vec3 
 		hit.tri = -1;
 		hit.bc = vec2(0.0);
 		intersectScene(ro, rd, hit);
+		if (hit.tri >= 0 && isNegativeCubeTri(hit.tri)) {
+			if (bounce > 0 || (isInsideOnlyTri(hit.tri) && insideOnlyHitFromOutside(hit.tri, hit.bc, rd))) {
+				ro += rd * (hit.t + RAY_EPS);
+				continue;
+			}
+		}
 
 		if (hit.tri == -1) {
 			vec3 env = envRadiance(rd);
@@ -2459,6 +2506,8 @@ void main() {
 				const side = mats.slotList[slot] ? mats.slotList[slot].side : 'double';
 				let cull = side === 'front' ? 1 : (side === 'back' ? 2 : 0);
 				if (cull !== 0 && geo.flips[t]) cull = 3 - cull;
+				// 剔除标志值 3-5 用于标记半透明的负尺寸方块，6 同时标记朝内的面
+				if (geo.negativeCube[t]) cull = geo.insideOnly[t] && side !== 'double' ? 6 : cull + 3;
 
 				triPos[po + 4] = geo.positions[so + 3];
 				triPos[po + 5] = geo.positions[so + 4];
@@ -4320,7 +4369,7 @@ void main() {
 			'',
 			'官方更新地址：https://github.com/Null-K/blockbench-plugins'
 		].join('\n'),
-		version: '1.5.0',
+		version: '1.5.1',
 		min_version: '4.8.0',
 		variant: 'both',
 		tags: ['Rendering', 'Preview'],
