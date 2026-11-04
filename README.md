@@ -44,6 +44,12 @@ https://www.bilibili.com/video/BV1EZ3762EV9
     - [X] 配置导出/导入
     - [ ] 风格化预设（这个估计有生之年了）
 
+### light_shade_studio.js
+光影调色台，暂无介绍视频
+
+- 更新日志
+    - **1.2.1** 初始版本
+
 ---
 
 ## 许可说明
