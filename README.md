@@ -45,7 +45,7 @@ https://www.bilibili.com/video/BV1EZ3762EV9
     - [ ] 风格化预设（这个估计有生之年了）
 
 ### light_shade_studio.js
-光影调色台，暂无介绍视频
+https://www.bilibili.com/video/BV1zkxR6pEAJ
 
 - 更新日志
     - **1.2.1** 初始版本
