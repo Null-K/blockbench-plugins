@@ -1,4 +1,4 @@
-# blockbench-plugins
+# BlockBench Plugins
 
 > [!NOTE]
 > 当前已安装的插件版本可以在 `Blockbench` 插件管理器中查看  
