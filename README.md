@@ -1,11 +1,11 @@
 # blockbench-plugins
 
 > [!NOTE]
-> 当前安装插件版本号可以在 `Blockbench` 插件窗口内查看  
-> 新版本包含旧版本的所有功能
+> 当前已安装的插件版本可以在 `Blockbench` 插件管理器中查看  
+> 新版本包含此前版本的所有功能
 > 
-> **更新需要重新下载文件并重新安装插件**  
-> **为了插件能够正常运行，下载后请不要重命名文件**
+> **更新插件需要重新下载并安装对应文件**  
+> **下载后请勿重命名插件文件，以免影响正常运行**
 
 ### 如果在使用中遇到问题，可以加入官方群 `1104261361` 进行反馈
 
@@ -15,14 +15,26 @@
 
 ---
 
-### hsl_shift_brush.js
-https://www.bilibili.com/video/BV1sq3V6yEsF
+### HSL Shift Brush
+
+色相偏移画笔工具
+
+- 相关链接
+    - [视频介绍](https://www.bilibili.com/video/BV1sq3V6yEsF)
+    - [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/hsl_shift_brush.js)
+    - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/hsl_shift_brush.js)
 
 - 更新日志
     - **1.0.0** 初始版本
 
-### pathtracer.js
-https://www.bilibili.com/video/BV1EZ3762EV9
+### Path Tracer
+
+在 Blockbench 内使用路径追踪渲染器
+
+- 相关链接
+    - [视频介绍](https://www.bilibili.com/video/BV1EZ3762EV9)
+    - [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/pathtracer.js)
+    - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/pathtracer.js)
 
 - 更新日志
     - **1.5.1** 兼容负尺寸模型
@@ -35,17 +47,15 @@ https://www.bilibili.com/video/BV1EZ3762EV9
     - **1.2.0** 修改降噪算法，提高强度上限
     - **1.1.0** 添加渲染面功能，兼容负尺寸模型
     - **1.0.0** 初始版本
-- 已知问题
-    - 暂无
-- TODO
-    - [X] 优化自发光使用体验
-    - [X] 拆分/优化窗口
-    - [X] 渲染性能优化
-    - [X] 配置导出/导入
-    - [ ] 风格化预设（这个估计有生之年了）
 
-### light_shade_studio.js
-https://www.bilibili.com/video/BV1zkxR6pEAJ
+### Light Shade Studio
+
+光影调色台，快速生成真实光影配色
+
+- 相关链接
+    - [视频介绍](https://www.bilibili.com/video/BV1zkxR6pEAJ)
+    - [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/light_shade_studio.js)
+    - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/light_shade_studio.js)
 
 - 更新日志
     - **1.2.1** 初始版本
