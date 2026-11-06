@@ -25,7 +25,7 @@
     - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/hsl_shift_brush.js)
 
 - 更新日志
-    - **1.0.0** 初始版本
+    - **1.2.0** 初始版本
 
 ### Path Tracer
 
