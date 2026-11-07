@@ -60,6 +60,18 @@
 - 更新日志
     - **1.2.1** 初始版本
 
+### Text To Cubes
+
+将字体文字转换为方块模型。
+
+- 相关链接
+    - [视频介绍(暂无)]()
+    - [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/text_to_cubes.js)
+    - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/text_to_cubes.js)
+
+- 更新日志
+    - **1.5.0** 初始版本
+
 ---
 
 ## 许可说明
