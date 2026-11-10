@@ -72,6 +72,18 @@
 - 更新日志
     - **1.5.0** 初始版本
 
+### 3D Pen
+
+三维路径建模与模型组画笔，支持折线、贝塞尔、圆形管道及沿路径盖印。
+
+- 相关链接
+    - [视频介绍(暂无)]()
+    - [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/pen_3d.js)
+    - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/pen_3d.js)
+
+- 更新日志
+    - **1.5.0** 初始版本
+
 ---
 
 ## 许可说明
