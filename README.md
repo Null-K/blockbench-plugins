@@ -13,80 +13,63 @@
     <img width="150" src="https://pic1.afdiancdn.com/static/img/welcome/button-sponsorme.png" alt="在爱发电支持我">
 </a>
 
----
+## 插件总览
 
-### HSL Shift Brush
+| 插件 | 功能简介 | 相关链接 |
+| --- | --- | --- |
+| HSL Shift Brush | 色相偏移画笔工具 | [视频介绍](https://www.bilibili.com/video/BV1sq3V6yEsF) / [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/hsl_shift_brush.js) / [URL 加载](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/hsl_shift_brush.js) |
+| Path Tracer | 在 Blockbench 内使用路径追踪渲染器 | [视频介绍](https://www.bilibili.com/video/BV1EZ3762EV9) / [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/pathtracer.js) / [URL 加载](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/pathtracer.js) |
+| Light Shade Studio | 光影调色台，快速生成真实光影配色 | [视频介绍](https://www.bilibili.com/video/BV1zkxR6pEAJ) / [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/light_shade_studio.js) / [URL 加载](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/light_shade_studio.js) |
+| Text To Cubes | 将字体文字转换为方块模型 | [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/text_to_cubes.js) / [URL 加载](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/text_to_cubes.js) |
+| 3D Pen | 三维路径建模与模型组画笔，支持折线、贝塞尔、圆形管道及沿路径盖印 | [视频介绍](https://www.bilibili.com/video/BV1d3WG6dEBR) / [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/pen_3d.js) / [URL 加载](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/pen_3d.js) |
 
-色相偏移画笔工具
+## 更新日志
 
-- 相关链接
-    - [视频介绍](https://www.bilibili.com/video/BV1sq3V6yEsF)
-    - [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/hsl_shift_brush.js)
-    - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/hsl_shift_brush.js)
+<details>
+<summary>HSL Shift Brush</summary>
 
-- 更新日志
-    - **1.2.0** 初始版本
+- **1.2.0** 初始版本
 
-### Path Tracer
+</details>
 
-在 Blockbench 内使用路径追踪渲染器
+<details>
+<summary>Path Tracer</summary>
 
-- 相关链接
-    - [视频介绍](https://www.bilibili.com/video/BV1EZ3762EV9)
-    - [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/pathtracer.js)
-    - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/pathtracer.js)
+- **1.5.1** 兼容负尺寸模型
+- **1.5.0** 优化自发光功能，优化窗口，增加场景配置导入/导出功能，添加水印功能
+- **1.4.3** 优化渲染性能
+- **1.4.2** 添加 `光源采样数` 设置，可以单独提升光源采样降低噪点。修复自定义分辨率窗口大小问题
+- **1.4.1** 添加 `重置为默认参数` 按钮，可以将所有设置重置为默认参数
+- **1.4.0** 添加渲染模式按钮，默认为低采样预览减少卡顿，确认效果后可以切换到高清模式保存图片
+- **1.3.0** 添加后处理效果：泛光、锐化、暗角、胶片
+- **1.2.0** 修改降噪算法，提高强度上限
+- **1.1.0** 添加渲染面功能，兼容负尺寸模型
+- **1.0.0** 初始版本
 
-- 更新日志
-    - **1.5.1** 兼容负尺寸模型
-    - **1.5.0** 优化自发光功能，优化窗口，增加场景配置导入/导出功能，添加水印功能
-    - **1.4.3** 优化渲染性能
-    - **1.4.2** 添加 `光源采样数` 设置，可以单独提升光源采样降低噪点。修复自定义分辨率窗口大小问题
-    - **1.4.1** 添加 `重置为默认参数` 按钮，可以将所有设置重置为默认参数
-    - **1.4.0** 添加渲染模式按钮，默认为低采样预览减少卡顿，确认效果后可以切换到高清模式保存图片
-    - **1.3.0** 添加后处理效果：泛光、锐化、暗角、胶片
-    - **1.2.0** 修改降噪算法，提高强度上限
-    - **1.1.0** 添加渲染面功能，兼容负尺寸模型
-    - **1.0.0** 初始版本
+</details>
 
-### Light Shade Studio
+<details>
+<summary>Light Shade Studio</summary>
 
-光影调色台，快速生成真实光影配色
+- **1.2.1** 初始版本
 
-- 相关链接
-    - [视频介绍](https://www.bilibili.com/video/BV1zkxR6pEAJ)
-    - [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/light_shade_studio.js)
-    - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/light_shade_studio.js)
+</details>
 
-- 更新日志
-    - **1.2.1** 初始版本
+<details>
+<summary>Text To Cubes</summary>
 
-### Text To Cubes
+- **1.5.0** 初始版本
 
-将字体文字转换为方块模型。
+</details>
 
-- 相关链接
-    - [视频介绍(暂无)]()
-    - [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/text_to_cubes.js)
-    - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/text_to_cubes.js)
+<details>
+<summary>3D Pen</summary>
 
-- 更新日志
-    - **1.5.0** 初始版本
+- **1.5.2** 修改钢笔设置无法保存的问题
+- **1.5.1** 修复 Java 模型项目中无法正常使用的问题
+- **1.5.0** 初始版本
 
-### 3D Pen
-
-三维路径建模与模型组画笔，支持折线、贝塞尔、圆形管道及沿路径盖印。
-
-- 相关链接
-    - [视频介绍](https://www.bilibili.com/video/BV1d3WG6dEBR)
-    - [下载插件](https://github.com/Null-K/blockbench-plugins/blob/main/pen_3d.js)
-    - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/pen_3d.js)
-
-- 更新日志
-    - **1.5.2** 修改钢笔设置无法保存的问题
-    - **1.5.1** 修复 Java 模型项目中无法正常使用的问题
-    - **1.5.0** 初始版本
-
----
+</details>
 
 ## 许可说明
 
