@@ -14,6 +14,8 @@
 
     function validateOptions(value) {
         value = {...CURVE_DEFAULTS, ...TUBE_DEFAULTS, ...STAMP_DEFAULTS, ...value};
+
+        if (value.stamp_group === null) value.stamp_group = '';
         for (const [key, min, max] of [['width', 0.05, 64], ['max_length', 0.05, 256], ['step', 0.05, 64], ['grid', 0, 64], ['tension', 0, 1], ['radius', 0.05, 256], ['curve_error', 0.005, 1]]) {
             if (!Number.isFinite(value[key]) || value[key] < min || value[key] > max) {
                 throw new Error(`${key} 必须在 ${min}~${max} 之间。`);
@@ -1059,7 +1061,7 @@
             '',
 			'官方更新地址：https://github.com/Null-K/blockbench-plugins'
 		].join('\n'),
-        version: '1.5.1', min_version: '4.10.0', variant: 'both',
+        version: '1.5.2', min_version: '4.10.0', variant: 'both',
         onload: register,
         onunload() {
             reset();

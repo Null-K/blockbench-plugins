@@ -82,6 +82,7 @@
     - [从 URL 加载插件](https://raw.githubusercontent.com/Null-K/blockbench-plugins/refs/heads/main/pen_3d.js)
 
 - 更新日志
+    - **1.5.2** 修改钢笔设置无法保存的问题
     - **1.5.1** 修复 Java 模型项目中无法正常使用的问题
     - **1.5.0** 初始版本
 
