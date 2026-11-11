@@ -594,7 +594,7 @@
             };
             const update = form => {
                 try {
-                    const config = validateOptions({...pending.config, ...form});
+                    const config = validateGenerationForm(pending, form);
                     const boxes = makeBoxes(pending.points, config, Format, pending.handles, pending.closed);
                     pending.config = config;
                     pending.invalid = false;
@@ -619,7 +619,7 @@
                 onConfirm(form) {
                     try {
                         if (generation !== pending || Project !== pending.project || !active()) throw new Error('项目或路径已改变，请重新确认。');
-                        const config = validateOptions({...pending.config, ...form});
+                        const config = validateGenerationForm(pending, form);
                         if (config.generator === 'stamp' && !config.stamp_group) throw new Error('请选择要盖印的模型组。');
                         const boxes = makeBoxes(pending.points, config, Format, pending.handles, pending.closed);
                         createModel(boxes, config);
@@ -643,6 +643,37 @@
                 }
             }).show();
         } catch (error) { message(error); }
+    }
+
+    function validateGenerationForm(pending, form) {
+        const config = {...pending.config, curve: form.curve || pending.config.curve, max_length: form.max_length ?? pending.config.max_length,
+            curve_error: form.curve_error ?? pending.config.curve_error, tension: form.tension ?? pending.config.tension,
+            radius: form.radius ?? pending.config.radius};
+        config.generator = form.generator || pending.config.generator || 'path';
+        if (config.generator === 'path') {
+            Object.assign(config, STAMP_DEFAULTS, {generator: 'path'});
+            config.mode = form.mode || pending.config.mode || 'auto';
+            config.step = config.mode === 'steps'
+                ? (Number.isFinite(form.step) ? form.step : pending.config.step)
+                : pending.config.step;
+            config.profile = form.profile || pending.config.profile || 'square';
+            if (config.profile === 'tube') {
+                config.width = CURVE_DEFAULTS.width ?? 1;
+                for (const key of ['tube_radius', 'tube_sides', 'tube_hollow', 'tube_wall']) {
+                    config[key] = form[key] ?? pending.config[key] ?? TUBE_DEFAULTS[key];
+                }
+            } else {
+                config.width = form.width ?? pending.config.width;
+                Object.assign(config, TUBE_DEFAULTS);
+            }
+        } else {
+            Object.assign(config, TUBE_DEFAULTS, STAMP_DEFAULTS, {generator: 'stamp', profile: 'square'});
+            config.stamp_group = form.stamp_group || pending.config.stamp_group || '';
+            for (const key of ['stamp_spacing', 'stamp_align', 'stamp_scale', 'stamp_rotation']) {
+                config[key] = form[key] ?? pending.config[key] ?? STAMP_DEFAULTS[key];
+            }
+        }
+        return validateOptions(config);
     }
 
     function removePoint() {
@@ -1028,7 +1059,7 @@
             '',
 			'官方更新地址：https://github.com/Null-K/blockbench-plugins'
 		].join('\n'),
-        version: '1.5.0', min_version: '4.10.0', variant: 'both',
+        version: '1.5.1', min_version: '4.10.0', variant: 'both',
         onload: register,
         onunload() {
             reset();
